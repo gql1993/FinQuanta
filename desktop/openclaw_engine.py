@@ -20,6 +20,7 @@ import logging
 import numpy as np
 from datetime import datetime, date
 
+from core.ai.context_builder import build_openclaw_context_text
 from desktop.data_access import get_repo, get_kv_json, set_kv_json
 from desktop.task_orchestrator import log_system_event, run_task
 
@@ -329,7 +330,13 @@ def run_full_pipeline(boards: list[str] = None, callback=None) -> dict:
         except Exception as e:
             # fallback 到单 LLM
             from desktop.ai_trader import run_ai_decision
-            result = run_ai_decision(",".join(boards), mode="auto")
+            extra_prompt = build_openclaw_context_text(
+                boards=boards,
+                candidate_count=len(results.get("candidates", [])),
+                news_sentiment=results.get("news_sentiment", {}),
+                factor_coverage=len(results.get("factor_scores", {})),
+            )
+            result = run_ai_decision(",".join(boards), mode="auto", extra_prompt=extra_prompt)
             decisions = result.get("decisions", [])
             results["decisions"] = decisions
             return f"{len(decisions)}条决策(单LLM) {result.get('analysis','')[:60]}"

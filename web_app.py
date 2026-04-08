@@ -1,6 +1,8 @@
 """
-FinQuanta Web 版 — 完整功能的 Streamlit 在线应用
-手机微信可直接访问，与桌面版数据完全同步（共享同一个 SQLite 数据库）。
+FinQuanta Web 版 - Streamlit 在线应用。
+
+产品策略上，Web 端优先通过 API 访问平台能力；当前版本仍保留本地模式
+兼容回退，便于单机验证和渐进式服务化改造。
 
 启动: streamlit run web_app.py --server.port 8501 --server.address 0.0.0.0
 """
@@ -100,7 +102,7 @@ if page == "📈 总览":
             api_resp = _api_call("GET", "/api/snapshot/system")
             snap = api_resp.get("data", {})
         except Exception:
-            from desktop.snapshot_service import get_system_snapshot
+            from core.application.snapshot_service import get_system_snapshot
             snap = get_system_snapshot()
         comp = snap.get("ai_portfolios", {})
         market = snap.get("market_state", {})
@@ -239,7 +241,7 @@ elif page == "🤖 AI仓":
             prices = comp.get("prices", {})
         except Exception:
             from desktop.ai_portfolio import get_state, get_comparison
-            from desktop.snapshot_service import get_system_snapshot
+            from core.application.snapshot_service import get_system_snapshot
 
             comp = get_comparison()
             snap = get_system_snapshot()
@@ -336,7 +338,7 @@ elif page == "🦀 OpenClaw":
                 api_resp = _api_call("GET", "/api/snapshot/system")
                 snap = api_resp.get("data", {})
             except Exception:
-                from desktop.snapshot_service import get_system_snapshot
+                from core.application.snapshot_service import get_system_snapshot
                 snap = get_system_snapshot()
             c1, c2, c3 = st.columns(3)
             c1.metric("全仓总资产", f"¥{snap.get('totals',{}).get('equity', 0):,.0f}")

@@ -47,11 +47,30 @@ from api_server.assistant_service import (
 )
 from api_server.settings_service import get_ai_config, save_ai_config
 from api_server.storage import repo
-from desktop.openclaw_engine import run_full_pipeline
-from desktop.openclaw_learner import evaluate_and_learn, get_strategy_weights
-from desktop.snapshot_service import get_system_snapshot
-from desktop.task_orchestrator import get_recent_system_events, get_recent_task_runs
-from desktop.portfolio_tracker import get_operation_log
+from core.application.openclaw_service import (
+    get_openclaw_data_sources,
+    get_openclaw_strategy_weights,
+    run_openclaw_learning,
+    run_openclaw_pipeline,
+)
+from core.application.ops_service import (
+    get_message_feed,
+    get_ops_center_payload,
+    get_recent_system_events,
+    get_recent_task_runs,
+)
+from core.application.portfolio_service import (
+    get_portfolio_positions,
+    get_portfolio_summary,
+)
+from core.application.snapshot_service import get_system_snapshot
+from core.application.task_service import run_scan_task, trigger_named_task
+from core.application.trade_approval_service import approve_trade
+from core.application.verify_service import (
+    calibrate_verify,
+    get_verify_accuracy_stats,
+    get_verify_records,
+)
 
 app = FastAPI(
     title="FinQuanta API",
@@ -177,15 +196,7 @@ def api_ops_events(authorization: str | None = Header(default=None), limit: int 
 @app.get("/api/ops/center", response_model=ApiResponse)
 def api_ops_center(authorization: str | None = Header(default=None), limit: int = 20):
     require_user(authorization)
-    snap = get_system_snapshot()
-    return ApiResponse(
-        data={
-            "snapshot": snap,
-            "tasks": get_recent_task_runs(limit),
-            "events": get_recent_system_events(limit),
-            "operations": get_operation_log(limit),
-        }
-    )
+    return ApiResponse(data=get_ops_center_payload(limit))
 
 
 @app.get("/api/scan/latest", response_model=ApiResponse)
@@ -205,35 +216,20 @@ def api_scan_run(req: TriggerRequest, authorization: str | None = Header(default
         raise HTTPException(status_code=403, detail="permission denied")
     if req.dry_run:
         return ApiResponse(data={"dry_run": True, "task": "scan_stocks"})
-    from desktop.daemon_scheduler import DaemonScheduler
-    ds = DaemonScheduler()
-    ds._task_scan_stocks()
+    run_scan_task()
     return api_scan_latest(authorization)
 
 
 @app.get("/api/portfolio/summary", response_model=ApiResponse)
 def api_portfolio_summary(authorization: str | None = Header(default=None)):
     require_user(authorization)
-    snap = get_system_snapshot()
-    return ApiResponse(
-        data={
-            "manual": snap.get("manual_portfolio", {}),
-            "ai": snap.get("ai_portfolios", {}),
-            "totals": snap.get("totals", {}),
-        }
-    )
+    return ApiResponse(data=get_portfolio_summary())
 
 
 @app.get("/api/portfolio/positions", response_model=ApiResponse)
 def api_portfolio_positions(authorization: str | None = Header(default=None)):
     require_user(authorization)
-    snap = get_system_snapshot()
-    return ApiResponse(
-        data={
-            "manual_positions": snap.get("manual_portfolio_raw", {}).get("positions", []),
-            "ai_states": snap.get("ai_states", {}),
-        }
-    )
+    return ApiResponse(data=get_portfolio_positions())
 
 
 @app.get("/api/portfolio/recommendations", response_model=ApiResponse)
@@ -258,27 +254,7 @@ def api_portfolio_recommendations(authorization: str | None = Header(default=Non
 @app.get("/api/messages", response_model=ApiResponse)
 def api_messages(authorization: str | None = Header(default=None), limit: int = 30):
     require_user(authorization)
-    events = get_recent_system_events(limit)
-    ops = get_operation_log(limit)
-    messages = []
-    for e in events:
-        messages.append({
-            "time": e.get("timestamp", ""),
-            "type": e.get("category", ""),
-            "title": e.get("title", ""),
-            "detail": e.get("detail", ""),
-            "level": e.get("level", "info"),
-        })
-    for o in ops:
-        messages.append({
-            "time": o.get("time", ""),
-            "type": o.get("module", ""),
-            "title": o.get("action", ""),
-            "detail": o.get("detail", ""),
-            "level": "info",
-        })
-    messages.sort(key=lambda x: x.get("time", ""), reverse=True)
-    return ApiResponse(data=messages[:limit])
+    return ApiResponse(data=get_message_feed(limit))
 
 
 @app.get("/api/assistant/context", response_model=ApiResponse)
@@ -401,16 +377,14 @@ def api_stock_kline(code: str, authorization: str | None = Header(default=None),
 @app.get("/api/stock/{code}/verify", response_model=ApiResponse)
 def api_stock_verify(code: str, authorization: str | None = Header(default=None), limit: int = 30):
     require_user(authorization)
-    from desktop.trend_verify import get_records
-    rows = [r for r in get_records(limit=500) if r.get("code") == code][:limit]
+    rows = [r for r in get_verify_records(limit=500) if r.get("code") == code][:limit]
     return ApiResponse(data=rows)
 
 
 @app.get("/api/verify/summary", response_model=ApiResponse)
 def api_verify_summary(authorization: str | None = Header(default=None)):
     require_user(authorization)
-    from desktop.trend_verify import get_accuracy_stats
-    return ApiResponse(data=get_accuracy_stats())
+    return ApiResponse(data=get_verify_accuracy_stats())
 
 
 @app.get("/api/verify/records", response_model=ApiResponse)
@@ -420,8 +394,7 @@ def api_verify_records(
     strategy: str = "",
 ):
     require_user(authorization)
-    from desktop.trend_verify import get_records
-    rows = get_records(limit=limit)
+    rows = get_verify_records(limit=limit)
     if strategy:
         rows = [r for r in rows if (r.get("strategy") or "").lower() == strategy.lower()]
     return ApiResponse(data=rows)
@@ -432,21 +405,19 @@ def api_verify_calibrate(authorization: str | None = Header(default=None)):
     user = require_user(authorization)
     if not has_permission(user, "task:trigger"):
         raise HTTPException(status_code=403, detail="permission denied")
-    from desktop.trend_verify import calibrate
-    return ApiResponse(data=calibrate())
+    return ApiResponse(data=calibrate_verify())
 
 
 @app.get("/api/openclaw/weights", response_model=ApiResponse)
 def api_openclaw_weights(authorization: str | None = Header(default=None)):
     require_user(authorization)
-    return ApiResponse(data=get_strategy_weights())
+    return ApiResponse(data=get_openclaw_strategy_weights())
 
 
 @app.get("/api/openclaw/sources", response_model=ApiResponse)
 def api_openclaw_sources(authorization: str | None = Header(default=None)):
     require_user(authorization)
-    from desktop.openclaw_engine import get_data_sources_status
-    return ApiResponse(data=get_data_sources_status())
+    return ApiResponse(data=get_openclaw_data_sources())
 
 
 @app.post("/api/openclaw/pipeline/run", response_model=ApiResponse)
@@ -457,7 +428,7 @@ def api_openclaw_pipeline_run(req: TriggerRequest, authorization: str | None = H
     boards = req.boards or ["人工智能", "芯片", "量子科技"]
     if req.dry_run:
         return ApiResponse(data={"dry_run": True, "boards": boards})
-    result = run_full_pipeline(boards=boards)
+    result = run_openclaw_pipeline(boards=boards)
     return ApiResponse(data=result)
 
 
@@ -468,7 +439,7 @@ def api_openclaw_learn_run(req: TriggerRequest, authorization: str | None = Head
         raise HTTPException(status_code=403, detail="permission denied")
     if req.dry_run:
         return ApiResponse(data={"dry_run": True})
-    result = evaluate_and_learn()
+    result = run_openclaw_learning()
     return ApiResponse(data=result)
 
 
@@ -479,23 +450,10 @@ def api_trigger_task(task_key: str, req: TriggerRequest, authorization: str | No
         raise HTTPException(status_code=403, detail="permission denied")
     if req.dry_run:
         return ApiResponse(data={"dry_run": True, "task": task_key})
-
-    from desktop.daemon_scheduler import DaemonScheduler
-
-    ds = DaemonScheduler()
-    mapping = {
-        "scan": ds._task_scan_stocks,
-        "learn": ds._task_auto_learn,
-        "pipeline": lambda: run_full_pipeline(boards=req.boards or ["人工智能", "芯片", "量子科技"]),
-        "risk": ds._task_risk_calc,
-        "backtest": ds._task_auto_backtest,
-        "watchlist": ds._task_watchlist_scan,
-        "short_term": ds._task_short_term,
-    }
-    fn = mapping.get(task_key)
-    if not fn:
+    try:
+        result = trigger_named_task(task_key, boards=req.boards)
+    except KeyError:
         raise HTTPException(status_code=404, detail="unknown task")
-    result = fn()
     return ApiResponse(data={"task": task_key, "result": result})
 
 
@@ -514,23 +472,17 @@ def api_trade_approval(req: ApprovalTradeRequest, authorization: str | None = He
     action = (req.action or "").upper()
     if action not in ("BUY", "SELL"):
         raise HTTPException(status_code=400, detail="action must be BUY or SELL")
-
-    if action == "BUY":
-        from desktop.ai_portfolio import buy
-        msg = buy(
-            mode,
-            req.code,
-            req.name or req.code,
-            req.price,
-            req.shares,
-            round(req.price * 0.92, 2),
-            f"[审批执行] {req.reason}",
+    return ApiResponse(
+        data=approve_trade(
+            mode=mode,
+            action=action,
+            code=req.code,
+            name=req.name,
+            price=req.price,
+            shares=req.shares,
+            reason=req.reason,
         )
-        return ApiResponse(data={"approved": True, "action": action, "message": msg})
-
-    from desktop.ai_portfolio import sell
-    msg = sell(mode, req.code, req.price, f"[审批执行] {req.reason}")
-    return ApiResponse(data={"approved": True, "action": action, "message": msg})
+    )
 
 
 @app.get("/api/admin/users", response_model=ApiResponse)
