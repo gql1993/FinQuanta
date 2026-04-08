@@ -1,0 +1,39 @@
+<view class="page">
+  <view class="title">📈 系统总览</view>
+  <button class="btn-primary" bindtap="loadSnapshot" loading="{{loading}}">刷新快照</button>
+  <view class="red" wx:if="{{error}}">{{error}}</view>
+
+  <view class="card" wx:if="{{snapshot}}">
+    <view class="list-title">系统快照</view>
+    <view class="list-desc">更新时间：{{snapshot.updated_at}}</view>
+    <view class="row">
+      <view class="col">
+        <view class="metric">全仓总资产</view>
+        <view class="metric-value">¥{{snapshot.totals.equity}}</view>
+      </view>
+      <view class="col">
+        <view class="metric">总可用现金</view>
+        <view class="metric-value">¥{{snapshot.totals.cash}}</view>
+      </view>
+    </view>
+    <view class="row">
+      <view class="col">
+        <view class="metric">总持仓数</view>
+        <view class="metric-value">{{snapshot.totals.positions}}</view>
+      </view>
+      <view class="col">
+        <view class="metric">市场状态</view>
+        <view class="metric-value">{{snapshot.market_state.state}}</view>
+      </view>
+    </view>
+  </view>
+
+  <view class="card" wx:if="{{snapshot}}">
+    <view class="list-title">五仓摘要</view>
+    <view class="list-item">💼 手动仓：¥{{snapshot.manual_portfolio.equity}} / {{snapshot.manual_portfolio.return_pct}}%</view>
+    <view class="list-item">🟣 完全自主：¥{{snapshot.ai_portfolios.full_auto.equity}} / {{snapshot.ai_portfolios.full_auto.return_pct}}%</view>
+    <view class="list-item">🔵 AI推荐：¥{{snapshot.ai_portfolios.auto.equity}} / {{snapshot.ai_portfolios.auto.return_pct}}%</view>
+    <view class="list-item">📌 自定义：¥{{snapshot.ai_portfolios.custom.equity}} / {{snapshot.ai_portfolios.custom.return_pct}}%</view>
+    <view class="list-item">⚛️ 量子仓：¥{{snapshot.ai_portfolios.quantum.equity}} / {{snapshot.ai_portfolios.quantum.return_pct}}%</view>
+  </view>
+</view>

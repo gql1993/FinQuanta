@@ -3,13 +3,12 @@
 支持自定义因子回测：换手率、市值、动量、波动率、量价因子等。
 单因子IC/IR分析 + 分层回测。
 """
-import os
-import sqlite3
 import numpy as np
 from dataclasses import dataclass
 from datetime import datetime
 
-DB_PATH = os.path.join("data_cache", "quant.db")
+from desktop.data_access import get_repo
+from desktop.label_engine import future_return
 
 
 @dataclass
@@ -39,22 +38,55 @@ BUILTIN_FACTORS = {
 }
 
 
+def compute_factor_bundle_from_arrays(close: np.ndarray, high: np.ndarray, low: np.ndarray, volume: np.ndarray) -> dict[str, float]:
+    """对单只股票一次性计算常用因子，供 OpenClaw/策略模块复用。"""
+    c = np.asarray(close, dtype=float)
+    h = np.asarray(high, dtype=float)
+    v = np.asarray(volume, dtype=float)
+    n = len(c)
+    out: dict[str, float] = {}
+    if n < 20:
+        return out
+
+    try:
+        out["momentum_5d"] = float((c[-1] / c[-6] - 1) * 100) if n >= 6 and c[-6] > 0 else 0
+        out["momentum_20d"] = float((c[-1] / c[-21] - 1) * 100) if n >= 21 and c[-21] > 0 else 0
+        out["momentum_60d"] = float((c[-1] / c[-61] - 1) * 100) if n >= 61 and c[-61] > 0 else 0
+        out["volatility_20d"] = float(np.std(c[-20:]) / max(np.mean(c[-20:]), 1e-6))
+        out["volume_ratio"] = float(v[-1]) / max(float(np.mean(v[-20:])), 1.0)
+        out["turnover_proxy"] = float(np.mean(v[-5:])) / max(float(np.mean(v[-60:])), 1.0) if n >= 60 else 1.0
+        ma20 = float(np.mean(c[-20:]))
+        out["price_ma_distance"] = float(c[-1] / ma20 - 1) * 100 if ma20 > 0 else 0
+        h52 = float(np.max(h[-250:])) if n >= 250 else float(np.max(h))
+        out["high_distance"] = float(c[-1] / h52 - 1) * 100 if h52 > 0 else 0
+        if n >= 40:
+            std_e = float(np.std(c[-40:-20]))
+            std_l = float(np.std(c[-20:]))
+            out["vcp_contraction"] = std_l / max(std_e, 1e-6)
+        else:
+            out["vcp_contraction"] = 1.0
+    except Exception:
+        return out
+    return out
+
+
 def _load_stock_data(min_days: int = 60, max_stocks: int = 300) -> dict:
     """加载所有有足够数据的股票日线。"""
-    conn = sqlite3.connect(DB_PATH, timeout=10)
-    cur = conn.execute("""
+    repo = get_repo()
+    codes = [r[0] for r in repo.fetchall(
+        """
         SELECT code FROM daily_kline GROUP BY code
         HAVING COUNT(*) >= ? ORDER BY COUNT(*) DESC LIMIT ?
-    """, (min_days, max_stocks))
-    codes = [r[0] for r in cur.fetchall()]
+        """,
+        (min_days, max_stocks),
+    )]
 
     stock_data = {}
     for code in codes:
-        cur2 = conn.execute(
+        rows = repo.fetchall(
             "SELECT date, close, high, low, volume FROM daily_kline WHERE code=? ORDER BY date",
             (code,),
         )
-        rows = cur2.fetchall()
         if len(rows) >= min_days:
             stock_data[code] = {
                 "dates": [r[0] for r in rows],
@@ -63,7 +95,6 @@ def _load_stock_data(min_days: int = 60, max_stocks: int = 300) -> dict:
                 "low": np.array([r[3] for r in rows]),
                 "volume": np.array([r[4] for r in rows]),
             }
-    conn.close()
     return stock_data
 
 
@@ -127,14 +158,14 @@ def run_factor_analysis(factor_name: str, forward_days: int = 5,
     if len(factors) < 20:
         return FactorResult(factor_name=factor_name)
 
-    # 计算未来 N 日收益
+    # 计算未来 N 日收益（统一走 label_engine）
     forward_returns = {}
     for code, data in stock_data.items():
         if code not in factors:
             continue
         c = data["close"]
-        if len(c) >= forward_days + 1:
-            fwd = (c[-1] / c[-(forward_days + 1)] - 1) * 100
+        fwd = future_return(c, forward_days)
+        if fwd is not None:
             forward_returns[code] = float(fwd)
 
     common = set(factors.keys()) & set(forward_returns.keys())

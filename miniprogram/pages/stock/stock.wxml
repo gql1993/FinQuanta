@@ -1,0 +1,31 @@
+<view class="page">
+  <view class="title">📉 个股分析</view>
+  <input class="card" placeholder="输入股票代码，如 600519" bindinput="onCode" value="{{code}}" />
+  <button class="btn-primary" bindtap="query">查询</button>
+  <view class="red" wx:if="{{error}}">{{error}}</view>
+  <view class="card" wx:if="{{summary}}">
+    <view class="list-title">{{summary.code}} {{summary.name}}</view>
+    <view class="list-desc">最新价：¥{{summary.latest_price}}</view>
+    <view class="list-desc">涨跌幅：{{summary.change_pct}}%</view>
+    <view class="list-desc">60日最高：¥{{summary.high_60d}} / 最低：¥{{summary.low_60d}}</view>
+  </view>
+
+  <view class="card" wx:if="{{kline.length}}">
+    <view class="list-title">最近20日K线（收盘价折线）</view>
+    <canvas type="2d" id="klineCanvas" canvas-id="klineCanvas" style="width: 100%; height: 260rpx;"></canvas>
+  </view>
+
+  <view class="card" wx:if="{{kline.length}}">
+    <view class="list-title">最近20日K线（数据）</view>
+    <view class="list-item" wx:for="{{kline}}" wx:key="date">
+      {{item.date}} ｜ 收盘 {{item.close}} ｜ 高 {{item.high}} ｜ 低 {{item.low}}
+    </view>
+  </view>
+
+  <view class="card" wx:if="{{verify.length}}">
+    <view class="list-title">走势验证记录</view>
+    <view class="list-item" wx:for="{{verify}}" wx:key="signal_date">
+      {{item.signal_date}} ｜ {{item.strategy}} ｜ 1日 {{item.pnl_1d}}% ｜ 5日 {{item.pnl_5d}}%
+    </view>
+  </view>
+</view>

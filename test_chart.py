@@ -1,6 +1,7 @@
-import os, sys, sqlite3
+import os, sys
 os.environ['QT_OPENGL'] = 'software'
 sys.path.insert(0, '.')
+from desktop.data_access import get_repo
 import numpy as np
 from PyQt6.QtWidgets import QApplication, QMainWindow
 from PyQt6.QtGui import QFont, QColor
@@ -15,10 +16,10 @@ chart.setBackground('#1a1a2e')
 w.setCentralWidget(chart)
 w.resize(800, 500)
 
-conn = sqlite3.connect('data_cache/quant.db')
-cur = conn.execute("SELECT open,high,low,close FROM daily_kline WHERE code='002975' ORDER BY date")
-rows = cur.fetchall()
-conn.close()
+rows = get_repo().fetchall(
+    "SELECT open,high,low,close FROM daily_kline WHERE code='002975' ORDER BY date",
+    (),
+)
 print(f'{len(rows)} rows')
 
 n = min(len(rows), 250)

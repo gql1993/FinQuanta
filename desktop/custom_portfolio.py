@@ -3,15 +3,18 @@
 """
 import os
 import json
-import sqlite3
 import numpy as np
 from datetime import datetime, date, timedelta
 
-DB_PATH = os.path.join("data_cache", "quant.db")
+from api_server.config import settings
+
+from desktop.data_access import RepoCompatConnection
 
 
 def _init_tracking_table():
-    conn = sqlite3.connect(DB_PATH, timeout=5)
+    if settings.db_backend == "postgres":
+        return
+    conn = RepoCompatConnection()
     conn.execute("""
     CREATE TABLE IF NOT EXISTS custom_tracking (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -36,7 +39,7 @@ def auto_buy_top3_from_scan() -> list[str]:
     """
     from desktop.ai_portfolio import buy, get_state, check_trading_time
 
-    conn = sqlite3.connect(DB_PATH, timeout=5)
+    conn = RepoCompatConnection()
 
     # 读取扫描结果
     cur = conn.execute("SELECT value FROM kv_store WHERE key='last_scan_results'")
@@ -46,7 +49,8 @@ def auto_buy_top3_from_scan() -> list[str]:
         return ["无扫描结果，请先在选股雷达执行扫描"]
 
     try:
-        candidates = json.loads(row[0])
+        raw = row[0]
+        candidates = json.loads(raw) if isinstance(raw, str) else (raw or [])
     except Exception:
         conn.close()
         return ["扫描结果解析失败"]
@@ -71,12 +75,22 @@ def auto_buy_top3_from_scan() -> list[str]:
         board = c.get("板块", "")
 
         try:
-            price = float(price_str.replace(",", ""))
+            scan_price = float(price_str.replace(",", ""))
         except (ValueError, TypeError):
             continue
 
-        if not code or price <= 0:
+        if not code or scan_price <= 0:
             continue
+
+        # 使用真实市场价格，而非扫描结果中可能过时的价格
+        price = scan_price
+        try:
+            from desktop.ai_trader import _get_real_price
+            real_px = _get_real_price(code)
+            if real_px > 0:
+                price = real_px
+        except Exception:
+            pass
 
         if code in existing_codes:
             results.append(f"{code} {name} 已在仓中，跳过")
@@ -115,7 +129,7 @@ def auto_buy_board_top3(board_name: str) -> list[str]:
     from desktop.ai_portfolio import buy, get_state
     from desktop.ai_trader import _compute_strategy_scores
 
-    conn = sqlite3.connect(DB_PATH, timeout=10)
+    conn = RepoCompatConnection()
     cur = conn.execute("SELECT code FROM board_stocks WHERE board=?", (board_name,))
     codes = [r[0] for r in cur.fetchall()]
 
@@ -151,7 +165,7 @@ def auto_buy_board_top3(board_name: str) -> list[str]:
     existing = {p["code"] for p in state["positions"]}
 
     results = []
-    conn2 = sqlite3.connect(DB_PATH, timeout=5)
+    conn2 = RepoCompatConnection()
     for code, name, price, score, board in top3:
         if code in existing:
             results.append(f"{code} {name} 已在仓中")
@@ -187,7 +201,7 @@ def calibrate_tracking() -> list[dict]:
     """
     校准跟踪记录：对比买入后 5日/20日/60日/120日 的实际价格和收益。
     """
-    conn = sqlite3.connect(DB_PATH, timeout=10)
+    conn = RepoCompatConnection()
     cur = conn.execute(
         "SELECT id, code, buy_date, buy_price FROM custom_tracking WHERE status='tracking'"
     )
@@ -240,7 +254,7 @@ def calibrate_tracking() -> list[dict]:
 
 def get_tracking_summary() -> list[dict]:
     """获取所有跟踪记录（含已校准的多周期收益）。"""
-    conn = sqlite3.connect(DB_PATH, timeout=5)
+    conn = RepoCompatConnection()
     cur = conn.execute("""
         SELECT code, name, board, buy_date, buy_price, shares, score,
                pnl_5d, pnl_20d, pnl_60d, pnl_120d, last_calibrated

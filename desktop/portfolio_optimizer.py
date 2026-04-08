@@ -2,33 +2,28 @@
 组合优化模块
 基于均值-方差（Markowitz）和风险平价模型优化多股票持仓权重。
 """
-import os
-import sqlite3
 import numpy as np
 from datetime import datetime
 
-DB_PATH = os.path.join("data_cache", "quant.db")
+from desktop.data_access import get_repo
 
 
 def get_returns_matrix(codes: list[str], lookback: int = 60) -> tuple:
     """获取多只股票的日收益率矩阵。"""
-    conn = sqlite3.connect(DB_PATH, timeout=10)
+    repo = get_repo()
     all_returns = {}
 
     for code in codes:
-        cur = conn.execute(
+        rows = [r[0] for r in repo.fetchall(
             "SELECT close FROM daily_kline WHERE code=? ORDER BY date DESC LIMIT ?",
             (code, lookback + 1),
-        )
-        rows = [r[0] for r in cur.fetchall()]
+        )]
         if len(rows) < lookback:
             continue
         rows = rows[::-1]
         prices = np.array(rows)
         rets = np.diff(prices) / prices[:-1]
         all_returns[code] = rets[-lookback:]
-
-    conn.close()
 
     common_len = min(len(v) for v in all_returns.values()) if all_returns else 0
     if common_len < 20:

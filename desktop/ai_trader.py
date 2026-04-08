@@ -4,14 +4,15 @@ AI 决策引擎
 """
 import os
 import json
-import sqlite3
+import logging
 import urllib.request
 import numpy as np
 from datetime import datetime
 
-from desktop.ai_portfolio import get_state, buy, sell, get_log
+_log = logging.getLogger("ai_trader")
 
-DB_PATH = os.path.join("data_cache", "quant.db")
+from desktop.ai_portfolio import get_state, buy, sell, get_log
+from desktop.data_access import RepoCompatConnection
 
 
 def _get_api_config() -> dict:
@@ -34,7 +35,7 @@ def _get_api_config() -> dict:
     # 也检查 kv_store
     if not api_key:
         try:
-            conn = sqlite3.connect(DB_PATH, timeout=5)
+            conn = RepoCompatConnection()
             cur = conn.execute("SELECT value FROM kv_store WHERE key='ai_config'")
             row = cur.fetchone()
             conn.close()
@@ -51,7 +52,7 @@ def _get_api_config() -> dict:
 
 def save_ai_config(api_key: str, base_url: str = "", model: str = ""):
     """保存 AI API 配置。"""
-    conn = sqlite3.connect(DB_PATH, timeout=5)
+    conn = RepoCompatConnection()
     cfg = {
         "api_key": api_key,
         "base_url": base_url or "https://api.deepseek.com/v1",
@@ -77,6 +78,10 @@ def _call_llm(prompt: str, system: str = "") -> str:
         messages.append({"role": "system", "content": system})
     messages.append({"role": "user", "content": prompt})
 
+    # 根据 prompt 长度动态调整超时：短 prompt 60s，长 prompt 120s
+    prompt_len = sum(len(m["content"]) for m in messages)
+    api_timeout = 120 if prompt_len > 3000 else 60
+
     payload = json.dumps({
         "model": cfg["model"],
         "messages": messages,
@@ -84,21 +89,44 @@ def _call_llm(prompt: str, system: str = "") -> str:
         "max_tokens": 2000,
     }).encode("utf-8")
 
-    try:
-        req = urllib.request.Request(url, data=payload, method="POST", headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {cfg['api_key']}",
-        })
-        resp = urllib.request.urlopen(req, timeout=30)
-        body = json.loads(resp.read().decode("utf-8"))
-        return body["choices"][0]["message"]["content"]
-    except Exception as e:
-        return f"ERROR: API 调用失败: {e}"
+    last_err = None
+    for attempt in range(2):
+        try:
+            req = urllib.request.Request(url, data=payload, method="POST", headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {cfg['api_key']}",
+            })
+            resp = urllib.request.urlopen(req, timeout=api_timeout)
+            body = json.loads(resp.read().decode("utf-8"))
+            return body["choices"][0]["message"]["content"]
+        except Exception as e:
+            last_err = e
+            if attempt == 0 and "timed out" in str(e).lower():
+                import time
+                time.sleep(2)
+                continue
+            break
+    return f"ERROR: API 调用失败: {last_err}"
 
 
 def _build_market_context() -> str:
     """从 SQLite 构建当前市场上下文。"""
-    conn = sqlite3.connect(DB_PATH, timeout=5)
+    conn = RepoCompatConnection()
+
+    state_lines = []
+    try:
+        from desktop.market_state import get_market_state_snapshot
+        ms = get_market_state_snapshot()
+        state_lines.append("== 市场状态机 ==")
+        state_lines.append(f"状态: {ms.get('state', 'neutral')}")
+        state_lines.append(f"原因: {ms.get('reason', '')}")
+        if ms.get("sector_top3"):
+            state_lines.append(f"强势板块: {', '.join(ms['sector_top3'][:3])}")
+        if ms.get("sector_bottom3"):
+            state_lines.append(f"弱势板块: {', '.join(ms['sector_bottom3'][:3])}")
+        state_lines.append("")
+    except Exception:
+        pass
 
     # 获取有数据的前 20 只强势股
     cur = conn.execute("""
@@ -121,7 +149,7 @@ def _build_market_context() -> str:
     top_gainers = stocks[:10]
     top_losers = stocks[-5:]
 
-    lines = ["== 市场快照 =="]
+    lines = state_lines + ["== 市场快照 =="]
     lines.append("涨幅前10:")
     for code, price, pct in top_gainers:
         lines.append(f"  {code} ¥{price:.2f} {pct:+.2f}%")
@@ -143,7 +171,7 @@ def _build_portfolio_context(mode: str = "auto") -> str:
         f"持仓数: {len(state['positions'])}",
     ]
 
-    conn = sqlite3.connect(DB_PATH, timeout=5)
+    conn = RepoCompatConnection()
     for pos in state["positions"]:
         code = pos["code"]
         cur = conn.execute(
@@ -295,7 +323,7 @@ def _compute_strategy_scores(code: str, closes, highs, lows, volumes) -> dict:
     fund_score = 0
     fund_signals = []
     try:
-        conn_fund = sqlite3.connect(DB_PATH, timeout=3)
+        conn_fund = RepoCompatConnection()
         cur_f = conn_fund.execute(
             "SELECT holding_funds, change_type FROM fund_holdings WHERE code=? "
             "ORDER BY updated_at DESC LIMIT 1", (code,)
@@ -338,10 +366,12 @@ def _build_candidates_context(board: str = "人工智能", limit: int = 30) -> s
     数据来源2: 按板块分组评分，取每板块 Top10 精选
     两路合并去重，确保高分股不遗漏。
     """
-    conn = sqlite3.connect(DB_PATH, timeout=10)
+    conn = RepoCompatConnection()
     conn.execute("PRAGMA journal_mode=WAL")
 
-    boards = [b.strip() for b in board.split(",") if b.strip()] or [board]
+    boards = [b.strip() for b in board.split(",") if b.strip()]
+    if not boards:
+        return "== 候选股票 ==\n⚠️ 未指定有效板块，无法生成候选列表"
 
     names = {}
     try:
@@ -504,11 +534,73 @@ SYSTEM_PROMPT = """你是一个专业的 A 股量化交易 AI 决策引擎。你
 必须返回合法 JSON。"""
 
 
+def _build_decision_history_context() -> str:
+    """构建历史决策绩效反馈，帮助 LLM 从过去的决策中学习。"""
+    try:
+        conn = RepoCompatConnection()
+        rows = conn.execute(
+            "SELECT timestamp, decisions, actual_results "
+            "FROM ai_decision_memory WHERE calibrated=1 "
+            "ORDER BY timestamp DESC LIMIT 5"
+        ).fetchall()
+        conn.close()
+        if not rows:
+            return ""
+        lines = ["== 历史决策回顾（近5次已校准） =="]
+        for ts, dec_json, result_json in rows:
+            try:
+                decs = json.loads(dec_json) if dec_json else []
+                results = json.loads(result_json) if result_json else {}
+                pnl = results.get("avg_pnl", 0)
+                correct = results.get("correct_ratio", 0)
+                n = len(decs) if isinstance(decs, list) else 0
+                lines.append(
+                    f"  {ts[:10]}: {n}条决策, 准确率{correct:.0%}, 均收益{pnl:+.1f}%"
+                )
+            except Exception:
+                pass
+        if len(lines) <= 1:
+            return ""
+        lines.append("请参考历史表现，避免重复犯错，强化有效模式。")
+        return "\n".join(lines)
+    except Exception:
+        return ""
+
+
 def run_ai_decision(board: str = "人工智能", mode: str = "auto", extra_prompt: str = "") -> dict:
     """运行一次 AI 决策。mode: 'auto'/'manual'/'full_auto'"""
     market = _build_market_context()
     portfolio = _build_portfolio_context(mode)
     candidates = _build_candidates_context(board)
+    history = _build_decision_history_context()
+
+    # 所有模式：注入策略轮动 + 板块轮动 + 学习引擎反馈
+    evolution_ctx = ""
+    try:
+        from desktop.openclaw_learner import get_enhanced_full_auto_prompt
+        evolution_ctx = get_enhanced_full_auto_prompt()
+    except Exception:
+        pass
+    # 策略轮动和板块轮动
+    rotation_ctx = ""
+    try:
+        conn_r = RepoCompatConnection()
+        sr = conn_r.execute("SELECT value FROM kv_store WHERE key='strategy_rotation'").fetchone()
+        if sr:
+            sd = json.loads(sr[0])
+            rotation_ctx += f"\n== 策略轮动 ==\n当前最强策略: {sd.get('best_name','SEPA')}(综合分{sd.get('best_score',0):.0f})\n"
+        br = conn_r.execute("SELECT value FROM kv_store WHERE key='sector_rotation'").fetchone()
+        if br:
+            bd = json.loads(br[0])
+            top3 = bd.get("top3", [])
+            if top3:
+                rotation_ctx += f"最强板块: {', '.join(top3[:3])}，建议重点关注\n"
+                bottom3 = bd.get("bottom3", [])
+                if bottom3:
+                    rotation_ctx += f"最弱板块: {', '.join(bottom3[:3])}，建议回避\n"
+        conn_r.close()
+    except Exception:
+        pass
 
     prompt = f"""请基于以下数据做出交易决策：
 
@@ -517,6 +609,12 @@ def run_ai_decision(board: str = "人工智能", mode: str = "auto", extra_promp
 {portfolio}
 
 {candidates}
+
+{history}
+
+{evolution_ctx}
+
+{rotation_ctx}
 
 {extra_prompt}
 
@@ -544,7 +642,7 @@ def run_ai_decision(board: str = "人工智能", mode: str = "auto", extra_promp
 
 def _calc_atr_stop(code: str, entry_price: float, multiplier: float = 2.0) -> float:
     """基于 ATR（20日平均真实波幅）计算动态止损价。"""
-    conn = sqlite3.connect(DB_PATH, timeout=5)
+    conn = RepoCompatConnection()
     cur = conn.execute(
         "SELECT high, low, close FROM daily_kline WHERE code=? ORDER BY date DESC LIMIT 21",
         (code,),
@@ -577,7 +675,7 @@ def update_trailing_stops(mode: str = "full_auto") -> list[str]:
     if not state["positions"]:
         return []
 
-    conn = sqlite3.connect(DB_PATH, timeout=5)
+    conn = RepoCompatConnection()
     updates = []
 
     for p in state["positions"]:
@@ -616,8 +714,37 @@ def update_trailing_stops(mode: str = "full_auto") -> list[str]:
     return updates
 
 
+def _get_real_price(code: str) -> float:
+    """获取股票的真实最新价格（优先实时行情，退而求其次用最新日K收盘价）。"""
+    # 尝试实时行情
+    try:
+        from desktop.realtime_data import get_realtime_quotes
+        q = get_realtime_quotes([code], force=True)
+        px = q.get(code, {}).get("price", 0)
+        if px and px > 0:
+            return float(px)
+    except Exception:
+        pass
+    # 退而求其次：最新日K收盘价
+    try:
+        conn = RepoCompatConnection()
+        cur = conn.execute(
+            "SELECT close FROM daily_kline WHERE code=? ORDER BY date DESC LIMIT 1",
+            (code,),
+        )
+        row = cur.fetchone()
+        conn.close()
+        if row and row[0]:
+            return float(row[0])
+    except Exception:
+        pass
+    return 0.0
+
+
 def execute_ai_decisions(decisions: list[dict], mode: str = "auto") -> list[str]:
-    """执行 AI 的买卖决策。mode: 'auto'=自主仓, 'manual'=推荐仓"""
+    """执行 AI 的买卖决策。mode: 'auto'=自主仓, 'manual'=推荐仓
+    注意：买入/卖出价格始终使用真实市场价格，忽略 LLM 建议价。
+    """
     results = []
     for d in decisions:
         action = d.get("action", "").lower()
@@ -626,27 +753,51 @@ def execute_ai_decisions(decisions: list[dict], mode: str = "auto") -> list[str]
 
         if action == "buy":
             name = d.get("name", "")
-            price = float(d.get("price", 0))
             shares = int(d.get("shares", 0))
-            if not code or not price or not shares:
+            if not code or not shares:
                 results.append(f"跳过无效买入: {d}")
                 continue
-            stop_loss = _calc_atr_stop(code, price)
-            msg = buy(mode, code, name, price, shares, stop_loss, f"AI决策: {reason}")
+            real_price = _get_real_price(code)
+            ai_price = float(d.get("price", 0))
+            if real_price <= 0:
+                real_price = ai_price
+            if real_price <= 0:
+                results.append(f"跳过 {code}: 无法获取真实价格")
+                continue
+            if ai_price > 0 and abs(real_price - ai_price) / ai_price > 0.05:
+                _log.warning(
+                    f"价格修正 {code}: AI建议{ai_price:.2f} → 真实{real_price:.2f} "
+                    f"(偏差{(real_price/ai_price-1)*100:+.1f}%)"
+                )
+            # 动态仓位调整：根据评分和波动率调整买入股数
+            try:
+                score = int(d.get("score", 0) or 0)
+                conn_vol = RepoCompatConnection()
+                vol_rows = conn_vol.execute(
+                    "SELECT close FROM daily_kline WHERE code=? ORDER BY date DESC LIMIT 20",
+                    (code,),
+                ).fetchall()
+                conn_vol.close()
+                if len(vol_rows) >= 10:
+                    vol_closes = [r[0] for r in reversed(vol_rows)]
+                    volatility = float(np.std(vol_closes) / np.mean(vol_closes))
+                    # 高评分多买、高波动少买
+                    score_factor = min(1.5, max(0.5, score / 60)) if score > 0 else 1.0
+                    vol_factor = min(1.5, max(0.5, 0.04 / max(volatility, 0.01)))
+                    adj = score_factor * vol_factor
+                    new_shares = int(shares * adj / 100) * 100
+                    if new_shares >= 100 and new_shares != shares:
+                        _log.info(f"仓位调整 {code}: {shares}→{new_shares}股 "
+                                  f"(评分系数{score_factor:.2f} 波动系数{vol_factor:.2f})")
+                        shares = new_shares
+            except Exception:
+                pass
+            stop_loss = _calc_atr_stop(code, real_price)
+            msg = buy(mode, code, name, real_price, shares, stop_loss, f"AI决策: {reason}")
             results.append(msg)
 
         elif action == "sell":
-            try:
-                conn = sqlite3.connect(DB_PATH, timeout=5)
-                cur = conn.execute(
-                    "SELECT close FROM daily_kline WHERE code=? ORDER BY date DESC LIMIT 1",
-                    (code,),
-                )
-                row = cur.fetchone()
-                conn.close()
-                price = row[0] if row else 0
-            except Exception:
-                price = 0
+            price = _get_real_price(code)
             if price > 0:
                 msg = sell(mode, code, price, f"AI决策: {reason}")
                 results.append(msg)
@@ -685,7 +836,7 @@ def run_full_auto_cycle(boards: list[str] = None) -> list[str]:
     分析随时可跑，实际买卖仅在交易时间执行。
     """
     if not boards:
-        boards = ["人工智能"]
+        return ["⚠️ 未指定板块，请先勾选板块"]
 
     try:
         from desktop.agents import run_multi_agent_cycle

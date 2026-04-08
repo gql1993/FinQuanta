@@ -4,37 +4,29 @@ OpenClaw 集成 - AI 自主交易代理
 """
 import os
 import json
-import sqlite3
 import logging
-from datetime import datetime
+
+from desktop.data_access import get_kv_json, set_kv_json
 
 _log = logging.getLogger("openclaw_agent")
 
-DB_PATH = os.path.join("data_cache", "quant.db")
 OPENCLAW_CONFIG_KEY = "openclaw_config"
 
 
 def save_openclaw_config(api_key: str):
     """保存 OpenClaw API Key。"""
-    conn = sqlite3.connect(DB_PATH, timeout=5)
-    conn.execute(
-        "INSERT OR REPLACE INTO kv_store VALUES (?,?,?)",
-        (OPENCLAW_CONFIG_KEY, json.dumps({"api_key": api_key}), datetime.now().isoformat()),
-    )
-    conn.commit()
-    conn.close()
+    set_kv_json(OPENCLAW_CONFIG_KEY, {"api_key": api_key})
 
 
 def get_openclaw_config() -> dict:
     api_key = os.environ.get("OPENCLAW_API_KEY", "").strip()
     if not api_key:
         try:
-            conn = sqlite3.connect(DB_PATH, timeout=5)
-            cur = conn.execute("SELECT value FROM kv_store WHERE key=?", (OPENCLAW_CONFIG_KEY,))
-            row = cur.fetchone()
-            conn.close()
-            if row:
-                cfg = json.loads(row[0])
+            cfg = get_kv_json(OPENCLAW_CONFIG_KEY)
+            if isinstance(cfg, dict):
+                api_key = cfg.get("api_key", "")
+            elif isinstance(cfg, str):
+                cfg = json.loads(cfg)
                 api_key = cfg.get("api_key", "")
         except Exception:
             pass

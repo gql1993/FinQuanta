@@ -1,38 +1,23 @@
 """
-SQLite 本地数据层
+本地数据层：默认 SQLite；当 FINQUANTA_DB_BACKEND=postgres 时走 api_server.storage.repo。
+
 替代 CSV 文件缓存，提供毫秒级查询。
 """
+
+from __future__ import annotations
+
 import os
-import sqlite3
-import json
-from datetime import datetime, date
 from contextlib import contextmanager
+from datetime import datetime
+from pathlib import Path
 
 import pandas as pd
 
+from api_server.config import settings
+
 DB_PATH = os.path.join("data_cache", "quant.db")
 
-
-def _ensure_dir():
-    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-
-
-@contextmanager
-def get_conn():
-    _ensure_dir()
-    conn = sqlite3.connect(DB_PATH, timeout=10)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA synchronous=NORMAL")
-    try:
-        yield conn
-        conn.commit()
-    finally:
-        conn.close()
-
-
-def init_db():
-    with get_conn() as conn:
-        conn.executescript("""
+_INIT_SQLITE = """
         CREATE TABLE IF NOT EXISTS daily_kline (
             code TEXT NOT NULL,
             date TEXT NOT NULL,
@@ -64,16 +49,6 @@ def init_db():
         );
         CREATE INDEX IF NOT EXISTS idx_board ON board_stocks(board);
 
-        CREATE TABLE IF NOT EXISTS portfolio (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            code TEXT, name TEXT,
-            entry_date TEXT, entry_price REAL,
-            shares INTEGER, stop_loss REAL,
-            cost REAL, notes TEXT,
-            status TEXT DEFAULT 'open',
-            exit_date TEXT, exit_price REAL, exit_reason TEXT, pnl REAL
-        );
-
         CREATE TABLE IF NOT EXISTS kv_store (
             key TEXT PRIMARY KEY,
             value TEXT,
@@ -90,7 +65,62 @@ def init_db():
             PRIMARY KEY (code, strategy, predict_date, horizon)
         );
         CREATE INDEX IF NOT EXISTS idx_pred_code ON predictions(code);
-        """)
+
+        CREATE TABLE IF NOT EXISTS system_event_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT,
+            source TEXT,
+            category TEXT,
+            level TEXT,
+            title TEXT,
+            detail TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS task_run_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT,
+            task_name TEXT,
+            trigger_source TEXT,
+            status TEXT,
+            elapsed_ms REAL,
+            summary TEXT,
+            detail TEXT
+        );
+        """
+
+
+def _project_root() -> Path:
+    return Path(__file__).resolve().parent.parent
+
+
+def _repo():
+    from api_server.storage import repo
+
+    return repo
+
+
+def _ensure_sqlite_dir() -> None:
+    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+
+
+@contextmanager
+def get_conn():
+    """与 api_server.storage.repo 共用连接（SQLite / PostgreSQL）。优先使用 desktop.data_access.get_repo()。"""
+    if settings.db_backend != "postgres":
+        _ensure_sqlite_dir()
+    repo = _repo()
+    with repo.conn() as conn:
+        yield conn
+
+
+def init_db() -> None:
+    repo = _repo()
+    if settings.db_backend == "postgres":
+        sql_path = _project_root() / "infra" / "postgres_init.sql"
+        repo.executescript(sql_path.read_text(encoding="utf-8"))
+        return
+    _ensure_sqlite_dir()
+    repo.executescript(_INIT_SQLITE)
 
 
 def upsert_daily(code: str, df: pd.DataFrame):
@@ -98,30 +128,49 @@ def upsert_daily(code: str, df: pd.DataFrame):
         return
     rows = []
     for _, r in df.iterrows():
-        rows.append((
-            str(code),
-            str(pd.Timestamp(r.get("date")).strftime("%Y-%m-%d") if pd.notna(r.get("date")) else ""),
-            float(r.get("open", 0) or 0),
-            float(r.get("high", 0) or 0),
-            float(r.get("low", 0) or 0),
-            float(r.get("close", 0) or 0),
-            float(r.get("volume", 0) or 0),
-            float(r.get("amount", 0) or 0),
-            float(r.get("pct_change", 0) or 0),
-        ))
-    with get_conn() as conn:
-        conn.executemany(
-            "INSERT OR REPLACE INTO daily_kline VALUES (?,?,?,?,?,?,?,?,?)", rows
+        rows.append(
+            (
+                str(code),
+                str(pd.Timestamp(r.get("date")).strftime("%Y-%m-%d") if pd.notna(r.get("date")) else ""),
+                float(r.get("open", 0) or 0),
+                float(r.get("high", 0) or 0),
+                float(r.get("low", 0) or 0),
+                float(r.get("close", 0) or 0),
+                float(r.get("volume", 0) or 0),
+                float(r.get("amount", 0) or 0),
+                float(r.get("pct_change", 0) or 0),
+            )
+        )
+    repo = _repo()
+    if settings.db_backend == "postgres":
+        sql = """
+        INSERT INTO daily_kline (code, date, open, high, low, close, volume, amount, pct_change)
+        VALUES (?,?,?,?,?,?,?,?,?)
+        ON CONFLICT (code, date) DO UPDATE SET
+        open=EXCLUDED.open, high=EXCLUDED.high, low=EXCLUDED.low, close=EXCLUDED.close,
+        volume=EXCLUDED.volume, amount=EXCLUDED.amount, pct_change=EXCLUDED.pct_change
+        """
+        repo.executemany(sql, rows)
+    else:
+        repo.executemany(
+            "INSERT OR REPLACE INTO daily_kline VALUES (?,?,?,?,?,?,?,?,?)",
+            rows,
         )
 
 
 def get_daily(code: str) -> pd.DataFrame:
-    with get_conn() as conn:
-        df = pd.read_sql_query(
-            "SELECT * FROM daily_kline WHERE code=? ORDER BY date",
-            conn, params=(str(code),), parse_dates=["date"],
+    repo = _repo()
+    with repo.conn() as conn:
+        if settings.db_backend == "postgres":
+            sql = "SELECT * FROM daily_kline WHERE code=%s ORDER BY date"
+        else:
+            sql = "SELECT * FROM daily_kline WHERE code=? ORDER BY date"
+        return pd.read_sql_query(
+            sql,
+            conn,
+            params=(str(code),),
+            parse_dates=["date"],
         )
-    return df
 
 
 def upsert_stock_list(df: pd.DataFrame):
@@ -129,51 +178,47 @@ def upsert_stock_list(df: pd.DataFrame):
         return
     ts = datetime.now().isoformat()
     rows = [(str(r["code"]), str(r.get("name", "")), ts) for _, r in df.iterrows()]
-    with get_conn() as conn:
-        conn.executemany("INSERT OR REPLACE INTO stock_list VALUES (?,?,?)", rows)
+    repo = _repo()
+    if settings.db_backend == "postgres":
+        sql = """
+        INSERT INTO stock_list (code, name, updated_at) VALUES (?,?,?)
+        ON CONFLICT (code) DO UPDATE SET name=EXCLUDED.name, updated_at=EXCLUDED.updated_at
+        """
+        repo.executemany(sql, rows)
+    else:
+        repo.executemany("INSERT OR REPLACE INTO stock_list VALUES (?,?,?)", rows)
 
 
 def get_stock_list_db() -> pd.DataFrame:
-    with get_conn() as conn:
+    repo = _repo()
+    with repo.conn() as conn:
         return pd.read_sql_query("SELECT code, name FROM stock_list", conn)
 
 
 def upsert_board(board_name: str, codes: list[str]):
-    with get_conn() as conn:
-        conn.execute("DELETE FROM board_stocks WHERE board=?", (board_name,))
-        conn.executemany(
-            "INSERT INTO board_stocks VALUES (?,?)",
-            [(board_name, c) for c in codes],
-        )
+    repo = _repo()
+    repo.execute("DELETE FROM board_stocks WHERE board=?", (board_name,))
+    repo.executemany(
+        "INSERT INTO board_stocks VALUES (?,?)",
+        [(board_name, c) for c in codes],
+    )
 
 
 def get_board_stocks_db(board_name: str) -> list[str]:
-    with get_conn() as conn:
-        cur = conn.execute("SELECT code FROM board_stocks WHERE board=?", (board_name,))
-        return [r[0] for r in cur.fetchall()]
+    rows = _repo().fetchall("SELECT code FROM board_stocks WHERE board=?", (board_name,))
+    return [r[0] for r in rows]
 
 
 def get_all_boards_db() -> dict[str, int]:
-    with get_conn() as conn:
-        cur = conn.execute("SELECT board, COUNT(*) FROM board_stocks GROUP BY board ORDER BY board")
-        return {r[0]: r[1] for r in cur.fetchall()}
+    rows = _repo().fetchall(
+        "SELECT board, COUNT(*) FROM board_stocks GROUP BY board ORDER BY board"
+    )
+    return {r[0]: r[1] for r in rows}
 
 
 def kv_set(key: str, value):
-    with get_conn() as conn:
-        conn.execute(
-            "INSERT OR REPLACE INTO kv_store VALUES (?,?,?)",
-            (key, json.dumps(value, ensure_ascii=False), datetime.now().isoformat()),
-        )
+    _repo().kv_set(key, value)
 
 
 def kv_get(key: str, default=None):
-    with get_conn() as conn:
-        cur = conn.execute("SELECT value FROM kv_store WHERE key=?", (key,))
-        row = cur.fetchone()
-        if row:
-            try:
-                return json.loads(row[0])
-            except Exception:
-                return row[0]
-    return default
+    return _repo().kv_get(key, default)

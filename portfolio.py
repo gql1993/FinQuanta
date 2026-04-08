@@ -12,8 +12,11 @@
 """
 import json
 import os
+import sys
 from datetime import datetime, date, timedelta
 from dataclasses import dataclass, field, asdict
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import pandas as pd
 

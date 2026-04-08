@@ -7,3 +7,9 @@ tqdm>=4.65.0
 streamlit>=1.30.0
 plotly>=5.18.0
 openai>=1.10.0
+PyQt6>=6.5.0
+PyQt6-WebEngine>=6.5.0
+fastapi>=0.115.0
+uvicorn>=0.30.0
+psycopg[binary]
+redis

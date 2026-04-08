@@ -325,9 +325,20 @@ class StockAnalysisPanel(QWidget):
         layout_cfg = {
             "template": "plotly_dark",
             "paper_bgcolor": "#1a1a2e", "plot_bgcolor": "#1a1a2e",
-            "margin": {"l": 50, "r": 20, "t": 10, "b": 30},
-            "xaxis": {"rangeslider": {"visible": False}},
-            "legend": {"orientation": "h", "y": -0.08, "x": 0, "font": {"size": 10}},
+            "margin": {"l": 50, "r": 20, "t": 10, "b": 60},
+            "xaxis": {
+                "rangeslider": {
+                    "visible": True,
+                    "bgcolor": "#0d1117",
+                    "bordercolor": "#30363d",
+                    "thickness": 0.06,
+                },
+                "fixedrange": False,
+                "type": "category",
+            },
+            "yaxis": {"fixedrange": False},
+            "legend": {"orientation": "h", "y": -0.12, "x": 0, "font": {"size": 10}},
+            "dragmode": "pan",
         }
 
         import pathlib as _pathlib
@@ -339,20 +350,41 @@ class StockAnalysisPanel(QWidget):
         <style>
             html, body {{ margin:0; padding:0; width:100%; height:100%; overflow:hidden; background:#1a1a2e; }}
             #chart {{ width:100%; height:100%; }}
+            /* zoom hint */
+            #zoom-hint {{ position:fixed; top:6px; right:8px; font-size:11px; color:#555;
+                          pointer-events:none; z-index:99; }}
         </style>
         </head><body>
         <div id="chart"></div>
+        <div id="zoom-hint">滚轮缩放 · 拖拽平移 · 双击重置</div>
         <script>
         var traces = {json.dumps(traces)};
         var layout = {json.dumps(layout_cfg)};
-        Plotly.newPlot('chart', traces, layout, {{
+        var config = {{
             responsive: true,
             displayModeBar: true,
             modeBarButtonsToRemove: ['lasso2d', 'select2d', 'sendDataToCloud'],
-            displaylogo: false
-        }});
+            displaylogo: false,
+            scrollZoom: true
+        }};
+        Plotly.newPlot('chart', traces, layout, config);
+
+        /* 鼠标滚轮缩放 X 轴 */
+        var chartDiv = document.getElementById('chart');
+        chartDiv.addEventListener('wheel', function(e) {{
+            e.preventDefault();
+            var xRange = chartDiv._fullLayout.xaxis.range;
+            if (!xRange) return;
+            var len = xRange[1] - xRange[0];
+            var factor = e.deltaY < 0 ? 0.85 : 1.18;
+            var center = (xRange[0] + xRange[1]) / 2;
+            var newLen = len * factor;
+            var newRange = [center - newLen / 2, center + newLen / 2];
+            Plotly.relayout(chartDiv, {{'xaxis.range': newRange}});
+        }}, {{passive: false}});
+
         window.addEventListener('resize', function() {{
-            Plotly.Plots.resize(document.getElementById('chart'));
+            Plotly.Plots.resize(chartDiv);
         }});
         </script></body></html>"""
 

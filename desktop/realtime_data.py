@@ -3,24 +3,22 @@
 多源实时行情：新浪（秒级）+ 腾讯（分钟级）+ 东方财富（快照）
 支持单股/批量查询，自动降级和缓存。
 """
-import os
 import json
 import time
-import sqlite3
 import urllib.request
 import logging
 from datetime import datetime, date
 
+from api_server.config import settings
+
+from desktop.data_access import get_repo
+
 _log = logging.getLogger("realtime_data")
-DB_PATH = os.path.join("data_cache", "quant.db")
 
 _quote_cache = {}
 _CACHE_TTL = 10  # 秒级缓存
 
-
-def _init_realtime_table():
-    conn = sqlite3.connect(DB_PATH, timeout=5)
-    conn.executescript("""
+_REALTIME_DDL = """
     CREATE TABLE IF NOT EXISTS realtime_quotes (
         code TEXT PRIMARY KEY,
         name TEXT,
@@ -40,9 +38,13 @@ def _init_realtime_table():
         code TEXT, datetime TEXT, open REAL, high REAL, low REAL, close REAL, volume REAL,
         PRIMARY KEY (code, datetime)
     );
-    """)
-    conn.commit()
-    conn.close()
+"""
+
+
+def _init_realtime_table():
+    if settings.db_backend == "postgres":
+        return
+    get_repo().executescript(_REALTIME_DDL)
 
 
 _init_realtime_table()
@@ -190,47 +192,50 @@ def get_realtime_quotes(codes: list[str], force: bool = False) -> dict[str, dict
         )
         results.update(backup)
 
-    # 存入缓存和 SQLite
+    # 存入缓存和 SQLite（PostgreSQL 无本地 realtime 表时仅内存缓存）
     ts = datetime.now().isoformat()
-    conn = sqlite3.connect(DB_PATH, timeout=5)
     for code, q in results.items():
         q["_ts"] = now
         _quote_cache[code] = q
+
+    if settings.db_backend != "postgres":
         try:
-            conn.execute(
-                "INSERT OR REPLACE INTO realtime_quotes "
-                "(code,name,price,open,high,low,prev_close,volume,amount,"
-                "bid1_price,bid1_vol,ask1_price,ask1_vol,pct_change,turnover_rate,updated_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (code, q.get("name", ""), q.get("price", 0),
-                 q.get("open", 0), q.get("high", 0), q.get("low", 0),
-                 q.get("prev_close", 0), q.get("volume", 0), q.get("amount", 0),
-                 q.get("bid1_price", 0), q.get("bid1_vol", 0),
-                 q.get("ask1_price", 0), q.get("ask1_vol", 0),
-                 q.get("pct_change", 0), q.get("turnover_rate", 0), ts),
-            )
+            with get_repo().conn() as conn:
+                for code, q in results.items():
+                    try:
+                        conn.execute(
+                            "INSERT OR REPLACE INTO realtime_quotes "
+                            "(code,name,price,open,high,low,prev_close,volume,amount,"
+                            "bid1_price,bid1_vol,ask1_price,ask1_vol,pct_change,turnover_rate,updated_at) "
+                            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                            (code, q.get("name", ""), q.get("price", 0),
+                             q.get("open", 0), q.get("high", 0), q.get("low", 0),
+                             q.get("prev_close", 0), q.get("volume", 0), q.get("amount", 0),
+                             q.get("bid1_price", 0), q.get("bid1_vol", 0),
+                             q.get("ask1_price", 0), q.get("ask1_vol", 0),
+                             q.get("pct_change", 0), q.get("turnover_rate", 0), ts),
+                        )
+                    except Exception:
+                        pass
+                conn.commit()
+                for code in codes_to_fetch:
+                    if code not in results:
+                        try:
+                            cur = conn.execute(
+                                "SELECT name,price,prev_close,pct_change FROM realtime_quotes WHERE code=?",
+                                (code,),
+                            )
+                            row = cur.fetchone()
+                            if row:
+                                results[code] = {
+                                    "name": row[0], "price": row[1], "prev_close": row[2],
+                                    "pct_change": row[3], "_ts": now, "_source": "cache",
+                                }
+                        except Exception:
+                            pass
         except Exception:
             pass
-    conn.commit()
 
-    # 从 SQLite 补全仍缺失的
-    for code in codes_to_fetch:
-        if code not in results:
-            try:
-                cur = conn.execute(
-                    "SELECT name,price,prev_close,pct_change FROM realtime_quotes WHERE code=?",
-                    (code,),
-                )
-                row = cur.fetchone()
-                if row:
-                    results[code] = {
-                        "name": row[0], "price": row[1], "prev_close": row[2],
-                        "pct_change": row[3], "_ts": now, "_source": "cache",
-                    }
-            except Exception:
-                pass
-
-    conn.close()
     results.update(cached)
     return results
 
@@ -253,45 +258,60 @@ def fetch_min60_kline(code: str, count: int = 120) -> list[dict]:
         return []
 
     results = []
-    conn = sqlite3.connect(DB_PATH, timeout=5)
-    for r in rows:
-        if len(r) < 6:
-            continue
-        dt_str = str(r[0])
-        item = {
-            "datetime": dt_str,
-            "open": float(r[1]),
-            "close": float(r[2]),
-            "high": float(r[3]),
-            "low": float(r[4]),
-            "volume": float(r[5]),
-        }
-        results.append(item)
-        try:
-            conn.execute(
-                "INSERT OR REPLACE INTO min60_kline (code,datetime,open,high,low,close,volume) "
-                "VALUES (?,?,?,?,?,?,?)",
-                (code, dt_str, item["open"], item["high"], item["low"], item["close"], item["volume"]),
-            )
-        except Exception:
-            pass
-    conn.commit()
-    conn.close()
+    if settings.db_backend == "postgres":
+        for r in rows:
+            if len(r) < 6:
+                continue
+            dt_str = str(r[0])
+            results.append({
+                "datetime": dt_str,
+                "open": float(r[1]),
+                "close": float(r[2]),
+                "high": float(r[3]),
+                "low": float(r[4]),
+                "volume": float(r[5]),
+            })
+        return results
+
+    with get_repo().conn() as conn:
+        for r in rows:
+            if len(r) < 6:
+                continue
+            dt_str = str(r[0])
+            item = {
+                "datetime": dt_str,
+                "open": float(r[1]),
+                "close": float(r[2]),
+                "high": float(r[3]),
+                "low": float(r[4]),
+                "volume": float(r[5]),
+            }
+            results.append(item)
+            try:
+                conn.execute(
+                    "INSERT OR REPLACE INTO min60_kline (code,datetime,open,high,low,close,volume) "
+                    "VALUES (?,?,?,?,?,?,?)",
+                    (code, dt_str, item["open"], item["high"], item["low"], item["close"], item["volume"]),
+                )
+            except Exception:
+                pass
+        conn.commit()
     return results
 
 
 def get_min60_kline(code: str) -> list[dict]:
     """读取60分钟K线（先查本地，不足则拉取）。"""
-    conn = sqlite3.connect(DB_PATH, timeout=5)
-    cur = conn.execute(
-        "SELECT datetime,open,high,low,close,volume FROM min60_kline WHERE code=? ORDER BY datetime",
-        (code,),
-    )
+    if settings.db_backend == "postgres":
+        return fetch_min60_kline(code, 120)
+
+    repo = get_repo()
     rows = [
         {"datetime": r[0], "open": r[1], "high": r[2], "low": r[3], "close": r[4], "volume": r[5]}
-        for r in cur.fetchall()
+        for r in repo.fetchall(
+            "SELECT datetime,open,high,low,close,volume FROM min60_kline WHERE code=? ORDER BY datetime",
+            (code,),
+        )
     ]
-    conn.close()
 
     if len(rows) < 20:
         rows = fetch_min60_kline(code, 120)

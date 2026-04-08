@@ -1,0 +1,17 @@
+<view class="page">
+  <view class="title">📩 消息中心</view>
+  <button class="btn-primary" bindtap="loadMessages" loading="{{loading}}">刷新消息</button>
+  <view class="row" style="margin-top:16rpx;">
+    <button class="btn-primary" data-filter="" bindtap="onFilter">全部</button>
+    <button class="btn-primary" data-filter="scan" bindtap="onFilter">选股</button>
+    <button class="btn-primary" data-filter="openclaw" bindtap="onFilter">OpenClaw</button>
+    <button class="btn-primary" data-filter="manual_portfolio" bindtap="onFilter">手动仓</button>
+  </view>
+  <view class="red" wx:if="{{error}}">{{error}}</view>
+
+  <view class="card" wx:for="{{filtered}}" wx:key="time">
+    <view class="list-title">{{item.title}}</view>
+    <view class="list-desc">{{item.time}} | {{item.type}} | {{item.level}}</view>
+    <view class="list-desc">{{item.detail}}</view>
+  </view>
+</view>

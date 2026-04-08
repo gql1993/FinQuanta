@@ -106,17 +106,40 @@ def push_screening_results(candidates: list[dict], strategy_name: str = "") -> d
 
 
 def _push_serverchan(key: str, title: str, content: str) -> bool:
-    """Server酱推送（微信）。"""
+    """Server酱推送（微信）。标题限32字，免费版每天5条。"""
+    # 标题截断至 32 字符
+    if len(title) > 32:
+        title = title[:30] + ".."
+
     url = f"https://sctapi.ftqq.com/{key}.send"
-    data = urllib.parse.urlencode({"title": title, "desp": content}).encode("utf-8")
+    data = urllib.parse.urlencode({
+        "title": title,
+        "desp": content,
+    }).encode("utf-8")
     try:
-        req = urllib.request.Request(url, data=data, method="POST")
+        req = urllib.request.Request(
+            url, data=data, method="POST",
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
         resp = urllib.request.urlopen(req, timeout=10)
         body = json.loads(resp.read().decode("utf-8", errors="ignore"))
         ok = body.get("code") == 0 or body.get("errno") == 0
         if not ok:
             logger.warning("serverchan push failed: %s", body)
         return ok
+    except urllib.error.HTTPError as e:
+        try:
+            err_body = json.loads(e.read().decode("utf-8", errors="ignore"))
+            err_msg = err_body.get("message", str(e))
+            logger.warning("serverchan push rejected: %s", err_msg)
+            # 次数限制 → 不算致命错误，静默处理
+            if "次数限制" in err_msg:
+                logger.info("serverchan daily limit reached (free: 5/day)")
+                return False
+        except Exception:
+            pass
+        logger.error("serverchan push HTTP error: %s", e)
+        return False
     except Exception as e:
         logger.error("serverchan push error: %s", e)
         return False

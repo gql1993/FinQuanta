@@ -4,7 +4,11 @@
   1. screen   - 当日选股，输出符合条件的候选列表
   2. backtest - 历史回测，输出绩效报告
 """
+import sys
+import os
 import argparse
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import pandas as pd
 

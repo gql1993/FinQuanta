@@ -10,13 +10,13 @@
 """
 import os
 import json
-import sqlite3
 import numpy as np
 import logging
 from datetime import datetime, date
 
+from desktop.data_access import RepoCompatConnection
+
 _log = logging.getLogger("agents")
-DB_PATH = os.path.join("data_cache", "quant.db")
 
 
 class IntelligenceAgent:
@@ -39,10 +39,10 @@ class IntelligenceAgent:
     def gather(boards: list[str] = None) -> dict:
         """采集全方位情报数据。"""
         if not boards:
-            boards = ["人工智能"]
+            return {"agent": "intelligence", "error": "未指定板块", "market": {}, "boards": [], "events": [], "fund_top": []}
         report = {"agent": "intelligence", "timestamp": datetime.now().isoformat()}
 
-        conn = sqlite3.connect(DB_PATH, timeout=10)
+        conn = RepoCompatConnection()
         conn.execute("PRAGMA journal_mode=WAL")
 
         # 市场概况：取有数据的前50只股票的涨跌统计
@@ -172,9 +172,9 @@ class AnalysisAgent:
     def analyze(intel_report: dict, boards: list[str] = None) -> dict:
         """基于情报做策略分析。"""
         if not boards:
-            boards = ["人工智能"]
+            return {"agent": "analysis", "candidates": [], "market_regime": "未指定板块"}
 
-        conn = sqlite3.connect(DB_PATH, timeout=10)
+        conn = RepoCompatConnection()
         conn.execute("PRAGMA journal_mode=WAL")
 
         candidates = []
@@ -348,7 +348,7 @@ def _detect_regime(intel: dict) -> str:
 
 
 def _init_memory_table():
-    conn = sqlite3.connect(DB_PATH, timeout=5)
+    conn = RepoCompatConnection()
     conn.execute("""
     CREATE TABLE IF NOT EXISTS ai_decision_memory (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -374,7 +374,7 @@ def _save_decision_memory(result: dict):
     """保存完整决策上下文到数据库，供后续校准。"""
     import json as _json
     try:
-        conn = sqlite3.connect(DB_PATH, timeout=5)
+        conn = RepoCompatConnection()
         intel_step = next((s for s in result.get("steps", []) if "情报" in s.get("agent", "")), {})
         analysis_step = next((s for s in result.get("steps", []) if "分析" in s.get("agent", "")), {})
         conn.execute(
@@ -404,7 +404,7 @@ def calibrate_decisions(days_after: int = 5) -> list[dict]:
     """
     import json as _json
     from datetime import timedelta
-    conn = sqlite3.connect(DB_PATH, timeout=5)
+    conn = RepoCompatConnection()
     cutoff = (date.today() - timedelta(days=days_after)).isoformat()
     cur = conn.execute(
         "SELECT id, timestamp, decisions FROM ai_decision_memory "
@@ -457,7 +457,7 @@ def calibrate_decisions(days_after: int = 5) -> list[dict]:
 def get_decision_accuracy(limit: int = 50) -> dict:
     """统计 AI 决策的历史准确率。"""
     import json as _json
-    conn = sqlite3.connect(DB_PATH, timeout=5)
+    conn = RepoCompatConnection()
     cur = conn.execute(
         "SELECT actual_results FROM ai_decision_memory WHERE calibrated=1 ORDER BY id DESC LIMIT ?",
         (limit,),
@@ -470,7 +470,13 @@ def get_decision_accuracy(limit: int = 50) -> dict:
                 total += 1
                 if r.get("correct"):
                     correct += 1
-                total_pnl += r.get("pnl_pct", 0)
+                pnl = r.get("pnl_pct", 0)
+                if pnl is None:
+                    pnl = 0
+                try:
+                    total_pnl += float(pnl)
+                except (TypeError, ValueError):
+                    pass
         except Exception:
             continue
     conn.close()
@@ -490,7 +496,7 @@ def run_multi_agent_cycle(boards: list[str] = None, mode: str = "full_auto",
     execute=False 时只做分析不执行（非交易时间）。
     """
     if not boards:
-        boards = ["人工智能"]
+        return {"error": "未指定板块", "timestamp": "", "steps": [], "decisions": [], "exec_results": ["未指定板块"]}
 
     result = {
         "timestamp": datetime.now().isoformat(),

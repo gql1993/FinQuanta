@@ -1,14 +1,28 @@
 """
-AI 双模拟仓：自主仓(auto) + 推荐仓(manual)
-两个仓完全独立，各自 100 万初始资金。
+AI 双模拟仓：完全自主仓(full_auto) + AI推荐仓(auto)
+四个仓完全独立，各自 100 万初始资金。
 遵守 A 股真实交易时间：工作日 9:15-11:30、13:00-15:00，排除法定节假日。
 """
-import os
+from __future__ import annotations
+
 import json
-import sqlite3
+import logging
 from datetime import datetime, date, timedelta
 
-DB_PATH = os.path.join("data_cache", "quant.db")
+from desktop.data_access import get_kv_json, get_repo, set_kv_json
+
+_log = logging.getLogger("ai_portfolio")
+from desktop.order_bus import GLOBAL_EVENT_BUS
+
+
+def _safe_float(v, default: float = 1_000_000.0) -> float:
+    if v is None:
+        return default
+    try:
+        x = float(v)
+        return default if x != x else x  # NaN -> default
+    except (TypeError, ValueError):
+        return default
 
 _CN_HOLIDAYS = {
     date(2025, 1, 1), date(2025, 1, 28), date(2025, 1, 29), date(2025, 1, 30),
@@ -29,6 +43,32 @@ _CN_HOLIDAYS = {
 }
 
 _WEEKDAY_CN = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+
+_INIT_SQLITE = """
+CREATE TABLE IF NOT EXISTS ai_positions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    mode TEXT NOT NULL DEFAULT 'auto',
+    code TEXT NOT NULL,
+    name TEXT,
+    entry_date TEXT,
+    entry_price REAL,
+    shares INTEGER,
+    stop_loss REAL,
+    status TEXT DEFAULT 'open',
+    exit_date TEXT,
+    exit_price REAL,
+    exit_reason TEXT,
+    pnl REAL
+);
+CREATE TABLE IF NOT EXISTS ai_trade_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    mode TEXT NOT NULL DEFAULT 'auto',
+    timestamp TEXT,
+    action TEXT,
+    code TEXT,
+    detail TEXT
+);
+"""
 
 
 def is_trading_day(d: date | None = None) -> bool:
@@ -77,68 +117,50 @@ def check_trading_time() -> str | None:
     return None
 
 
-def _get_conn():
-    conn = sqlite3.connect(DB_PATH, timeout=5)
-    conn.execute("PRAGMA journal_mode=WAL")
-    return conn
+def _init_table() -> None:
+    from api_server.config import settings
 
-
-def _init_table():
-    conn = _get_conn()
-    conn.executescript("""
-    CREATE TABLE IF NOT EXISTS ai_positions (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        mode TEXT NOT NULL DEFAULT 'auto',
-        code TEXT NOT NULL,
-        name TEXT,
-        entry_date TEXT,
-        entry_price REAL,
-        shares INTEGER,
-        stop_loss REAL,
-        status TEXT DEFAULT 'open',
-        exit_date TEXT,
-        exit_price REAL,
-        exit_reason TEXT,
-        pnl REAL
-    );
-    CREATE TABLE IF NOT EXISTS ai_trade_log (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        mode TEXT NOT NULL DEFAULT 'auto',
-        timestamp TEXT,
-        action TEXT,
-        code TEXT,
-        detail TEXT
-    );
-    """)
-    # 初始化四个仓的资金
-    for key in ["ai_auto_cash", "ai_manual_cash", "ai_full_auto_cash", "ai_custom_cash"]:
-        cur = conn.execute("SELECT value FROM kv_store WHERE key=?", (key,))
-        if not cur.fetchone():
-            conn.execute(
-                "INSERT INTO kv_store VALUES (?,?,?)",
-                (key, json.dumps({"cash": 1_000_000.0, "initial": 1_000_000.0}), datetime.now().isoformat()),
-            )
-    conn.commit()
-    conn.close()
+    repo = get_repo()
+    if settings.db_backend != "postgres":
+        repo.executescript(_INIT_SQLITE)
+    for key in [
+        "ai_auto_cash",
+        "ai_manual_cash",
+        "ai_full_auto_cash",
+        "ai_custom_cash",
+        "ai_quantum_cash",
+    ]:
+        if get_kv_json(key, None) is None:
+            set_kv_json(key, {"cash": 1_000_000.0, "initial": 1_000_000.0})
 
 
 _init_table()
 
 
 def _cash_key(mode: str) -> str:
-    _MAP = {"auto": "ai_auto_cash", "manual": "ai_manual_cash",
-            "full_auto": "ai_full_auto_cash", "custom": "ai_custom_cash"}
+    _MAP = {
+        "auto": "ai_auto_cash",
+        "manual": "ai_manual_cash",
+        "full_auto": "ai_full_auto_cash",
+        "custom": "ai_custom_cash",
+        "quantum": "ai_quantum_cash",
+    }
     return _MAP.get(mode, "ai_manual_cash")
 
 
 def get_state(mode: str = "auto") -> dict:
     """获取指定仓的状态。"""
-    conn = _get_conn()
-    cur = conn.execute("SELECT value FROM kv_store WHERE key=?", (_cash_key(mode),))
-    row = cur.fetchone()
-    cash_data = json.loads(row[0]) if row else {"cash": 1_000_000.0, "initial": 1_000_000.0}
+    repo = get_repo()
+    raw = get_kv_json(_cash_key(mode), {"cash": 1_000_000.0, "initial": 1_000_000.0})
+    if isinstance(raw, dict):
+        cash_data = {
+            "cash": _safe_float(raw.get("cash"), 1_000_000.0),
+            "initial": _safe_float(raw.get("initial"), 1_000_000.0),
+        }
+    else:
+        cash_data = {"cash": 1_000_000.0, "initial": 1_000_000.0}
 
-    cur2 = conn.execute(
+    cur2 = repo.fetchall(
         "SELECT id, code, name, entry_date, entry_price, shares, stop_loss "
         "FROM ai_positions WHERE mode=? AND status='open'",
         (mode,),
@@ -146,10 +168,10 @@ def get_state(mode: str = "auto") -> dict:
     positions = [
         {"id": r[0], "code": r[1], "name": r[2], "entry_date": r[3],
          "entry_price": r[4], "shares": r[5], "stop_loss": r[6]}
-        for r in cur2.fetchall()
+        for r in cur2
     ]
 
-    cur3 = conn.execute(
+    cur3 = repo.fetchall(
         "SELECT code, name, entry_date, entry_price, exit_date, exit_price, shares, pnl, exit_reason "
         "FROM ai_positions WHERE mode=? AND status='closed' ORDER BY exit_date DESC LIMIT 50",
         (mode,),
@@ -157,9 +179,8 @@ def get_state(mode: str = "auto") -> dict:
     closed = [
         {"code": r[0], "name": r[1], "entry_date": r[2], "entry_price": r[3],
          "exit_date": r[4], "exit_price": r[5], "shares": r[6], "pnl": r[7], "reason": r[8]}
-        for r in cur3.fetchall()
+        for r in cur3
     ]
-    conn.close()
 
     return {
         "cash": cash_data["cash"],
@@ -179,30 +200,66 @@ def buy(mode: str, code: str, name: str, price: float, shares: int, stop_loss: f
         return f"⛔ 无效股票代码: {code}"
     if shares <= 0 or shares % 100 != 0:
         return f"⛔ 买入数量必须为100的整数倍，当前: {shares}"
+    if price <= 0:
+        return f"⛔ 价格异常: {price}"
+
+    try:
+        repo = get_repo()
+        row = repo.fetchone(
+            "SELECT close, date FROM daily_kline WHERE code=? ORDER BY date DESC LIMIT 1",
+            (code,),
+        )
+        if row and row[0] > 0:
+            kline_close = row[0]
+            deviation = abs(price - kline_close) / kline_close
+            if deviation > 0.15:
+                _log.warning(
+                    f"价格偏差过大: {code} 买入价{price:.2f} vs 最新收盘{kline_close:.2f} "
+                    f"(偏差{deviation:.0%})，使用收盘价替代"
+                )
+                price = kline_close
+    except Exception:
+        pass
 
     state = get_state(mode)
-    cost = price * shares * 1.0003
-    if cost > state["cash"]:
-        return f"资金不足: 需要 ¥{cost:,.0f}，可用 ¥{state['cash']:,.0f}"
+    try:
+        from desktop.portfolio_tracker import apply_slippage
+        price = apply_slippage(price, is_buy=True)
+    except Exception:
+        pass
 
-    conn = _get_conn()
-    conn.execute(
+    cost = price * shares * 1.0003
+
+    if cost > state["cash"]:
+        max_shares = int(state["cash"] / (price * 1.0003) / 100) * 100
+        if max_shares <= 0:
+            return f"资金不足: 需要 ¥{cost:,.0f}，可用 ¥{state['cash']:,.0f}"
+        shares = max_shares
+        cost = price * shares * 1.0003
+        _log.info(f"资金不足，自动减仓: {code} → {shares}股")
+
+    repo = get_repo()
+    repo.execute(
         "INSERT INTO ai_positions (mode,code,name,entry_date,entry_price,shares,stop_loss,status) VALUES (?,?,?,?,?,?,?,?)",
         (mode, code, name, date.today().isoformat(), price, shares, stop_loss, "open"),
     )
     new_cash = state["cash"] - cost
-    conn.execute(
-        "INSERT OR REPLACE INTO kv_store VALUES (?,?,?)",
-        (_cash_key(mode), json.dumps({"cash": new_cash, "initial": state["initial_capital"]}),
-         datetime.now().isoformat()),
+    set_kv_json(
+        _cash_key(mode),
+        {"cash": round(new_cash, 2), "initial": state["initial_capital"]},
     )
-    conn.execute(
+    repo.execute(
         "INSERT INTO ai_trade_log (mode,timestamp,action,code,detail) VALUES (?,?,?,?,?)",
         (mode, datetime.now().isoformat(), "BUY", code, f"{shares}股@{price:.2f} {reason}"),
     )
-    conn.commit()
-    conn.close()
-    label = "自主仓" if mode == "auto" else "推荐仓"
+    _mode_labels = {"auto": "AI推荐仓", "full_auto": "完全自主仓",
+                    "manual": "AI推荐仓", "custom": "自定义仓", "quantum": "量子仓"}
+    label = _mode_labels.get(mode, mode)
+    GLOBAL_EVENT_BUS.publish(
+        "ORDER_FILLED",
+        "ai_portfolio",
+        {"mode": mode, "action": "BUY", "code": code, "name": name, "price": price, "shares": shares},
+    )
     return f"[{label}] 买入: {code} {name} {shares}股 @ ¥{price:.2f}"
 
 
@@ -211,57 +268,53 @@ def sell(mode: str, code: str, price: float, reason: str = "") -> str:
     if reject:
         return f"⛔ 非交易时间，卖出被拒绝: {reject}"
 
-    conn = _get_conn()
-    cur = conn.execute(
+    repo = get_repo()
+    row = repo.fetchone(
         "SELECT id, entry_price, shares, entry_date FROM ai_positions WHERE mode=? AND code=? AND status='open'",
         (mode, code),
     )
-    row = cur.fetchone()
     if not row:
-        conn.close()
         return f"未持有 {code}"
 
     pos_id, entry_price, shares, entry_date = row
 
-    # T+1: 当天买入不能卖出
     if entry_date == date.today().isoformat():
-        conn.close()
         return f"⛔ T+1限制: {code} 今日买入，最早明日可卖出"
 
     revenue = price * shares * (1 - 0.0003 - 0.001)
     pnl = revenue - entry_price * shares
 
-    conn.execute(
+    repo.execute(
         "UPDATE ai_positions SET status='closed', exit_date=?, exit_price=?, exit_reason=?, pnl=? WHERE id=?",
         (date.today().isoformat(), price, reason, round(pnl, 2), pos_id),
     )
     state = get_state(mode)
     new_cash = state["cash"] + revenue
-    conn.execute(
-        "INSERT OR REPLACE INTO kv_store VALUES (?,?,?)",
-        (_cash_key(mode), json.dumps({"cash": new_cash, "initial": state["initial_capital"]}),
-         datetime.now().isoformat()),
+    set_kv_json(
+        _cash_key(mode),
+        {"cash": new_cash, "initial": state["initial_capital"]},
     )
-    conn.execute(
+    repo.execute(
         "INSERT INTO ai_trade_log (mode,timestamp,action,code,detail) VALUES (?,?,?,?,?)",
         (mode, datetime.now().isoformat(), "SELL", code, f"{shares}股@{price:.2f} pnl={pnl:+.2f} {reason}"),
     )
-    conn.commit()
-    conn.close()
-    _labels = {"auto": "半自主仓", "manual": "推荐仓", "full_auto": "完全自主仓"}
+    _labels = {"auto": "AI推荐仓", "manual": "AI推荐仓", "full_auto": "完全自主仓"}
     label = _labels.get(mode, mode)
+    GLOBAL_EVENT_BUS.publish(
+        "ORDER_FILLED",
+        "ai_portfolio",
+        {"mode": mode, "action": "SELL", "code": code, "price": price, "shares": shares, "pnl": round(pnl, 2)},
+    )
     return f"[{label}] 卖出: {code} {shares}股 @ ¥{price:.2f}，盈亏 ¥{pnl:+,.2f}"
 
 
 def get_log(mode: str = "auto", limit: int = 30) -> list[dict]:
-    conn = _get_conn()
-    cur = conn.execute(
+    repo = get_repo()
+    cur = repo.fetchall(
         "SELECT timestamp, action, code, detail FROM ai_trade_log WHERE mode=? ORDER BY id DESC LIMIT ?",
         (mode, limit),
     )
-    logs = [{"time": r[0], "action": r[1], "code": r[2], "detail": r[3]} for r in cur.fetchall()]
-    conn.close()
-    return logs
+    return [{"time": r[0], "action": r[1], "code": r[2], "detail": r[3]} for r in cur]
 
 
 def get_comparison() -> dict:
@@ -270,42 +323,75 @@ def get_comparison() -> dict:
     manual = get_state("manual")
     full_auto = get_state("full_auto")
     custom = get_state("custom")
+    quantum = get_state("quantum")
 
     def _calc(state, prices):
         mv = sum(prices.get(p["code"], p["entry_price"]) * p["shares"] for p in state["positions"])
+        cost = sum(p["entry_price"] * p["shares"] for p in state["positions"])
+        unrealized_pnl = mv - cost
         eq = state["cash"] + mv
-        ret = (eq - state["initial_capital"]) / state["initial_capital"] * 100
-        trades = state["closed_trades"]
-        wins = sum(1 for t in trades if t.get("pnl", 0) > 0)
-        total = len(trades)
+        ic = state["initial_capital"]
+        if ic and ic > 0:
+            ret = (eq - ic) / ic * 100
+        else:
+            ret = 0.0
+        closed = state["closed_trades"]
+        realized_pnl = sum(t.get("pnl", 0) for t in closed)
+        wins = sum(1 for t in closed if t.get("pnl", 0) > 0)
+        total_trades = len(closed) + len(state["positions"])
+        open_wins = sum(1 for p in state["positions"]
+                        if prices.get(p["code"], p["entry_price"]) > p["entry_price"])
+        total_judged = len(closed) + len(state["positions"])
+        win_rate = (wins + open_wins) / total_judged * 100 if total_judged > 0 else 0
         return {
             "equity": eq, "return_pct": ret, "cash": state["cash"],
             "positions": len(state["positions"]),
-            "total_trades": total, "win_rate": wins / total * 100 if total > 0 else 0,
-            "total_pnl": sum(t.get("pnl", 0) for t in trades),
+            "total_trades": total_trades,
+            "win_rate": win_rate,
+            "total_pnl": realized_pnl + unrealized_pnl,
         }
 
-    # 获取现价
     prices = {}
-    try:
-        conn = _get_conn()
-        all_codes = set()
-        for s in [auto, manual, full_auto, custom]:
-            for p in s["positions"]:
-                all_codes.add(p["code"])
-        for code in all_codes:
-            cur = conn.execute("SELECT close FROM daily_kline WHERE code=? ORDER BY date DESC LIMIT 1", (code,))
-            row = cur.fetchone()
-            if row:
-                prices[code] = row[0]
-        conn.close()
-    except Exception:
-        pass
+    all_codes = set()
+    for s in [auto, manual, full_auto, custom, quantum]:
+        for p in s["positions"]:
+            all_codes.add(p["code"])
+
+    if all_codes:
+        try:
+            from desktop.realtime_data import get_realtime_quotes
+            quotes = get_realtime_quotes(list(all_codes), force=True)
+            for code, q in quotes.items():
+                px = q.get("price", 0)
+                if px and px > 0:
+                    prices[code] = float(px)
+        except Exception:
+            pass
+
+    missing = [c for c in all_codes if c not in prices]
+    if missing:
+        try:
+            repo = get_repo()
+            for code in missing:
+                row = repo.fetchone(
+                    "SELECT close FROM daily_kline WHERE code=? ORDER BY date DESC LIMIT 1",
+                    (code,),
+                )
+                if row and row[0] is not None:
+                    try:
+                        px = float(row[0])
+                        if px > 0:
+                            prices[code] = px
+                    except (TypeError, ValueError):
+                        pass
+        except Exception:
+            pass
 
     return {
         "auto": _calc(auto, prices),
         "manual": _calc(manual, prices),
         "full_auto": _calc(full_auto, prices),
         "custom": _calc(custom, prices),
+        "quantum": _calc(quantum, prices),
         "prices": prices,
     }

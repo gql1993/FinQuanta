@@ -3,11 +3,11 @@
 纯 SQLite + numpy，不依赖 Streamlit/akshare。
 """
 import os
-import sqlite3
 import numpy as np
 from dataclasses import dataclass, field
 
-DB_PATH = os.path.join("data_cache", "quant.db")
+from desktop.strategy_engine import build_context, score_candidate
+from desktop.data_access import RepoCompatConnection
 
 
 @dataclass
@@ -40,7 +40,7 @@ def run_local_backtest(
     纯本地回测：从 SQLite 读日线数据，模拟买卖。
     strategy: trend / breakout / value / momentum
     """
-    conn = sqlite3.connect(DB_PATH, timeout=10)
+    conn = RepoCompatConnection()
 
     # 获取有足够数据的股票
     cur = conn.execute(
@@ -210,63 +210,28 @@ def _get_ma(rows, date_str, period):
 
 def _compute_buy_score(rows, date_str, strategy):
     closes = [r[4] for r in rows if r[0] <= date_str]
+    lows = [r[3] for r in rows if r[0] <= date_str]
     highs = [r[2] for r in rows if r[0] <= date_str]
     volumes = [r[5] for r in rows if r[0] <= date_str]
     n = len(closes)
     if n < 60:
         return 0
-
-    price = closes[-1]
-    ma50 = float(np.mean(closes[-50:]))
-    ma150 = float(np.mean(closes[-150:])) if n >= 150 else ma50
-    ma200 = float(np.mean(closes[-200:])) if n >= 200 else ma150
-
-    if strategy == "trend":
-        if price <= ma50 or ma50 <= ma150:
-            return 0
-        high20 = max(closes[-21:-1]) if n >= 21 else price
-        if price < high20 * 0.98:
-            return 0
-        vol_recent = np.std(closes[-20:]) / max(np.mean(closes[-20:]), 1e-6)
-        vol_early = np.std(closes[-40:-20]) / max(np.mean(closes[-40:-20]), 1e-6) if n >= 40 else vol_recent
-        score = 50
-        if n >= 200 and ma50 > ma150 > ma200:
-            score += 20
-        if vol_recent < vol_early * 0.8:
-            score += 15
-        if price >= high20:
-            score += 15
-        return score
-
-    elif strategy == "breakout":
-        if n < 55:
-            return 0
-        high55 = max(closes[-56:-1])
-        if price < high55:
-            return 0
-        vol_ma = float(np.mean(volumes[-50:])) if n >= 50 else 1
-        vol_today = volumes[-1]
-        if vol_ma > 0 and vol_today > vol_ma * 1.5:
-            return 60 + (price / high55 - 1) * 100
-        return 0
-
-    elif strategy == "value":
-        if price > ma200 * 0.9:
-            return 0
-        mom60 = (price / closes[-61] - 1) if n >= 61 and closes[-61] > 0 else 0
-        if mom60 > -0.1:
-            return 0
-        return 50 + abs(mom60) * 100
-
-    elif strategy == "momentum":
-        if price <= ma50:
-            return 0
-        mom20 = (price / closes[-21] - 1) if n >= 21 and closes[-21] > 0 else 0
-        if mom20 < 0.03:
-            return 0
-        return 50 + mom20 * 200
-
-    return 0
+    ctx = build_context(
+        code="BACKTEST",
+        closes=np.array(closes, dtype=float),
+        highs=np.array(highs, dtype=float),
+        lows=np.array(lows, dtype=float),
+        vols=np.array(volumes, dtype=float),
+    )
+    sid_map = {
+        "trend": "sepa",
+        "breakout": "turtle",
+        "value": "graham",
+        "momentum": "lynch",
+    }
+    sid = sid_map.get(strategy, strategy)
+    scored = score_candidate(sid, ctx)
+    return int(scored["score"])
 
 
 def _compute_metrics(trades, equity_curve, initial_capital):
@@ -415,7 +380,7 @@ def run_walk_forward(strategy: str = "trend", sample_size: int = 200,
     """
     Walk-Forward 分析：将数据分为多个窗口，训练期 + 验证期，检验策略稳定性。
     """
-    conn = sqlite3.connect(DB_PATH, timeout=5)
+    conn = RepoCompatConnection()
     cur = conn.execute("""
         SELECT DISTINCT code FROM daily_kline
         GROUP BY code HAVING COUNT(*) >= 200

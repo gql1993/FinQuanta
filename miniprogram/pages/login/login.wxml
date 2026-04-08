@@ -1,0 +1,10 @@
+<view class="page">
+  <view class="card">
+    <view class="title">登录 FinQuanta</view>
+    <view class="subtitle">请输入账号密码，连接产品化 API 服务</view>
+    <input class="card" placeholder="用户名" value="{{username}}" bindinput="onUsername" />
+    <input class="card" placeholder="密码" password value="{{password}}" bindinput="onPassword" />
+    <button class="btn-primary" loading="{{loading}}" bindtap="onLogin">登录</button>
+    <view class="red" wx:if="{{error}}">{{error}}</view>
+  </view>
+</view>

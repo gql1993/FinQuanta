@@ -1,0 +1,61 @@
+version: "3.9"
+
+services:
+  api:
+    build:
+      context: ..
+      dockerfile: api_server/Dockerfile
+    container_name: finquanta-api
+    restart: unless-stopped
+    environment:
+      FINQUANTA_ENV: prod
+      FINQUANTA_API_HOST: 0.0.0.0
+      FINQUANTA_API_PORT: 9000
+      FINQUANTA_DB_BACKEND: postgres
+      FINQUANTA_POSTGRES_DSN: postgresql://finquanta:finquanta@postgres:5432/finquanta
+      FINQUANTA_REDIS_URL: redis://redis:6379/0
+      FINQUANTA_CORS_ORIGINS: "*"
+      FINQUANTA_SNAPSHOT_CACHE_TTL: 120
+    volumes:
+      - ../data_cache:/app/data_cache
+      - ../doc:/app/doc
+    depends_on:
+      - postgres
+      - redis
+    ports:
+      - "9000:9000"
+
+  postgres:
+    image: postgres:16
+    container_name: finquanta-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: finquanta
+      POSTGRES_USER: finquanta
+      POSTGRES_PASSWORD: finquanta
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ../infra/postgres_init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+
+  redis:
+    image: redis:7-alpine
+    container_name: finquanta-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: finquanta-nginx
+    restart: unless-stopped
+    depends_on:
+      - api
+    ports:
+      - "8080:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+
+volumes:
+  postgres_data:

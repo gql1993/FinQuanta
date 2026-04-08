@@ -31,12 +31,12 @@ class PortfolioPanel(QWidget):
             self.summary_labels[name] = lbl
         layout.addWidget(summary_box)
 
-        tabs = QTabWidget()
-        tabs.addTab(self._build_positions_tab(), "📊 持仓")
-        tabs.addTab(self._build_buy_tab(), "🛒 买入")
-        tabs.addTab(self._build_sell_tab(), "📤 卖出")
-        tabs.addTab(self._build_history_tab(), "📋 交易记录")
-        layout.addWidget(tabs)
+        self.inner_tabs = QTabWidget()
+        self.inner_tabs.addTab(self._build_positions_tab(), "📊 持仓")
+        self.inner_tabs.addTab(self._build_buy_tab(), "🛒 买入")
+        self.inner_tabs.addTab(self._build_sell_tab(), "📤 卖出")
+        self.inner_tabs.addTab(self._build_history_tab(), "📋 交易记录")
+        layout.addWidget(self.inner_tabs)
 
     def _build_positions_tab(self) -> QWidget:
         w = QWidget()
@@ -60,6 +60,52 @@ class PortfolioPanel(QWidget):
         self.pos_table.setAlternatingRowColors(True)
         self.pos_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         layout.addWidget(self.pos_table)
+
+        # 单击操作栏（仿同花顺：明细/买入/卖出/条件单/看行情）
+        self.action_bar = QWidget()
+        self.action_bar.setVisible(False)
+        ab = QHBoxLayout(self.action_bar)
+        ab.setContentsMargins(0, 4, 0, 4)
+        self.action_stock_label = QLabel("")
+        self.action_stock_label.setFont(QFont("", 11, QFont.Weight.Bold))
+        self.action_stock_label.setStyleSheet("color:#4fc3f7;")
+        ab.addWidget(self.action_stock_label)
+
+        self.btn_action_detail = QPushButton("📋 明细")
+        self.btn_action_detail.setStyleSheet("padding:6px 14px;")
+        ab.addWidget(self.btn_action_detail)
+
+        self.btn_action_buy = QPushButton("🛒 买入")
+        self.btn_action_buy.setStyleSheet("padding:6px 14px; background:#2E7D32;")
+        ab.addWidget(self.btn_action_buy)
+
+        self.btn_action_sell = QPushButton("📤 卖出")
+        self.btn_action_sell.setStyleSheet("padding:6px 14px; background:#C62828;")
+        ab.addWidget(self.btn_action_sell)
+
+        self.btn_action_condition = QPushButton("⏰ 条件单")
+        self.btn_action_condition.setStyleSheet("padding:6px 14px;")
+        ab.addWidget(self.btn_action_condition)
+
+        self.btn_action_chart = QPushButton("📈 看行情")
+        self.btn_action_chart.setStyleSheet("padding:6px 14px; background:#1565C0;")
+        ab.addWidget(self.btn_action_chart)
+
+        self.btn_action_ai_suggest = QPushButton("🦀 AI研判")
+        self.btn_action_ai_suggest.setStyleSheet("padding:6px 14px; background:#E65100; color:white;")
+        self.btn_action_ai_suggest.setToolTip("OpenClaw 分析该股票，给出买入/持有/卖出建议")
+        ab.addWidget(self.btn_action_ai_suggest)
+
+        ab.addStretch()
+
+        # AI 建议结果展示
+        self.ai_suggest_label = QLabel("")
+        self.ai_suggest_label.setStyleSheet("color:#4fc3f7; font-size:12px; padding:4px;")
+        self.ai_suggest_label.setWordWrap(True)
+        self.ai_suggest_label.setVisible(False)
+
+        layout.addWidget(self.action_bar)
+        layout.addWidget(self.ai_suggest_label)
         return w
 
     def _build_buy_tab(self) -> QWidget:
@@ -207,35 +253,47 @@ class PortfolioPanel(QWidget):
             except Exception:
                 pass
 
+            # 智能建议（规则 + OpenClaw 学习反馈）
             advice = "持有"
             advice_color = QColor("#888888")
+
+            # 基础规则
             if pnl_pct <= -8:
-                advice = "止损卖出"
+                advice = "⛔ 止损卖出"
                 advice_color = QColor("#ef5350")
             elif pnl_pct <= -5:
-                advice = "关注止损"
+                advice = "⚠ 关注止损"
                 advice_color = QColor("#FF9800")
-            elif pnl_pct >= 20 and day_pct <= -3:
-                advice = "止盈卖出"
+            elif pnl_pct >= 25 and day_pct <= -3:
+                advice = "🔔 止盈卖出"
                 advice_color = QColor("#FF9800")
             elif pnl_pct >= 20:
-                advice = "部分止盈"
+                advice = "📈 部分止盈"
                 advice_color = QColor("#4CAF50")
-            elif hold_days_n >= 20 and pnl_pct < 2:
-                advice = "时间止损"
+            elif hold_days_n >= 25 and pnl_pct < 2:
+                advice = "⏰ 时间止损"
                 advice_color = QColor("#FF9800")
-            elif pnl_pct >= 10:
-                advice = "持有上调止损"
+            elif pnl_pct >= 15:
+                advice = "🛡 持有上调止损"
                 advice_color = QColor("#4CAF50")
             elif pnl_pct >= 5:
-                advice = "持有保本"
+                advice = "✅ 持有保本"
                 advice_color = QColor("#4CAF50")
-            elif day_pct <= -5:
-                advice = "警惕异动"
+            elif day_pct <= -7:
+                advice = "🚨 异常大跌"
                 advice_color = QColor("#ef5350")
-            else:
-                advice = "继续持有"
+            elif day_pct <= -4:
+                advice = "⚠ 警惕异动"
+                advice_color = QColor("#FF9800")
+            elif day_pct >= 7:
+                advice = "🔥 大涨关注止盈"
+                advice_color = QColor("#4CAF50")
+            elif pnl_pct > 0:
+                advice = "💎 继续持有"
                 advice_color = QColor("#4fc3f7")
+            else:
+                advice = "📊 观察中"
+                advice_color = QColor("#888")
 
             item = QTableWidgetItem(advice)
             item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -246,3 +304,56 @@ class PortfolioPanel(QWidget):
             item = QTableWidgetItem(p.get("阶段", "-"))
             item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self.pos_table.setItem(i, 14, item)
+
+    def update_history(self, history: list[dict]):
+        """更新交易记录表。"""
+        red = QColor("#ef5350")
+        green = QColor("#26a69a")
+        self.history_table.setRowCount(len(history))
+        for i, h in enumerate(history):
+            action = h.get("action", "")
+            pnl = h.get("pnl", 0)
+            price = h.get("price", 0)
+            shares = h.get("shares", 0)
+
+            if action == "BUY":
+                vals = [
+                    h.get("code", ""),
+                    h.get("time", "")[:10],
+                    f"{price:.2f}",
+                    "", "", str(shares), "", "", "",
+                ]
+            elif action == "SELL":
+                entry_price = h.get("entry_price", 0)
+                pnl_pct = (price - entry_price) / entry_price * 100 if entry_price > 0 else 0
+                vals = [
+                    h.get("code", ""),
+                    h.get("entry_date", ""),
+                    f"{entry_price:.2f}" if entry_price else "",
+                    h.get("time", "")[:10],
+                    f"{price:.2f}",
+                    str(shares),
+                    f"{pnl:+,.2f}" if pnl else "",
+                    f"{pnl_pct:+.2f}%" if entry_price else "",
+                    h.get("reason", ""),
+                ]
+            else:
+                vals = [
+                    h.get("code", ""), h.get("time", "")[:10],
+                    f"{price:.2f}" if price else "",
+                    "", "", str(shares), "", "", action,
+                ]
+
+            for j, v in enumerate(vals):
+                item = QTableWidgetItem(str(v))
+                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                if j == 0:
+                    color = green if action == "BUY" else red if action == "SELL" else QColor("#888")
+                    item.setForeground(color)
+                if j == 6 and v:
+                    try:
+                        fv = float(v.replace(",", "").replace("+", ""))
+                        item.setForeground(red if fv > 0 else green if fv < 0 else QColor("#888"))
+                    except Exception:
+                        pass
+                self.history_table.setItem(i, j, item)

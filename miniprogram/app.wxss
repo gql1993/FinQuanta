@@ -1,0 +1,87 @@
+page {
+  background: #0d1117;
+  color: #e6edf3;
+  font-size: 28rpx;
+}
+
+.page {
+  padding: 24rpx;
+}
+
+.card {
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 16rpx;
+  padding: 20rpx;
+  margin-bottom: 20rpx;
+}
+
+.title {
+  font-size: 36rpx;
+  font-weight: 700;
+  margin-bottom: 20rpx;
+}
+
+.subtitle {
+  color: #8b949e;
+  font-size: 24rpx;
+  margin-bottom: 20rpx;
+}
+
+.row {
+  display: flex;
+  flex-direction: row;
+  gap: 16rpx;
+}
+
+.col {
+  flex: 1;
+}
+
+.metric {
+  font-size: 24rpx;
+  color: #8b949e;
+}
+
+.metric-value {
+  font-size: 34rpx;
+  font-weight: 700;
+  margin-top: 8rpx;
+}
+
+.green { color: #26a69a; }
+.red { color: #ef5350; }
+.blue { color: #4fc3f7; }
+.yellow { color: #fdd835; }
+.purple { color: #ce93d8; }
+.orange { color: #ff7043; }
+
+.btn-primary {
+  background: #1565c0;
+  color: #fff;
+  border-radius: 12rpx;
+  padding: 18rpx 24rpx;
+  margin-right: 16rpx;
+}
+
+.btn-danger {
+  background: #b71c1c;
+  color: #fff;
+  border-radius: 12rpx;
+  padding: 18rpx 24rpx;
+}
+
+.list-item {
+  padding: 20rpx 0;
+  border-bottom: 1px solid #30363d;
+}
+
+.list-title {
+  font-weight: 600;
+}
+
+.list-desc {
+  color: #8b949e;
+  font-size: 24rpx;
+  margin-top: 6rpx;
+}

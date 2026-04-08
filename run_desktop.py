@@ -16,7 +16,7 @@ def main():
         os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = "--disable-gpu"
 
         from PyQt6.QtWidgets import QApplication
-        from PyQt6.QtGui import QFont
+        from PyQt6.QtGui import QFont, QIcon
 
         # WebEngine 必须在 QApplication 之前初始化
         try:
@@ -25,8 +25,11 @@ def main():
             pass
 
         app = QApplication(sys.argv)
-        app.setApplicationName("AI 量化交易平台")
+        app.setApplicationName("FinQuanta")
         app.setFont(QFont("Microsoft YaHei", 10))
+        _icon = os.path.join(os.path.dirname(__file__), "desktop", "resources", "finquanta.ico")
+        if os.path.isfile(_icon):
+            app.setWindowIcon(QIcon(_icon))
 
         from desktop.main_window import MainWindow
         window = MainWindow()

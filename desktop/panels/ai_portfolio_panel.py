@@ -18,88 +18,51 @@ class AIPortfolioPanel(QWidget):
         title.setFont(QFont("", 16, QFont.Weight.Bold))
         layout.addWidget(title)
 
-        # API 配置区
-        api_row1 = QHBoxLayout()
-        api_row1.addWidget(QLabel("平台:"))
-        self.provider_combo = QComboBox()
-        self.provider_combo.addItems([
-            "DeepSeek", "OpenAI", "Google Gemini", "Claude", "通义千问", "月之暗面 Kimi", "自定义",
-        ])
-        self.provider_combo.currentTextChanged.connect(self._on_provider_changed)
-        api_row1.addWidget(self.provider_combo)
-        api_row1.addWidget(QLabel("模型:"))
-        self.model_combo = QComboBox()
-        self.model_combo.setEditable(True)
-        self.model_combo.setMinimumWidth(180)
-        api_row1.addWidget(self.model_combo)
-        api_row1.addStretch()
-        layout.addLayout(api_row1)
+        # AI 配置状态（只读展示，修改请到设置页）
+        self.ai_config_label = QLabel("AI 配置：加载中...")
+        self.ai_config_label.setStyleSheet("color:#8b949e; font-size:12px; padding:2px 0;")
+        layout.addWidget(self.ai_config_label)
 
-        api_row2 = QHBoxLayout()
-        api_row2.addWidget(QLabel("API Key:"))
-        self.api_key_input = QLineEdit()
-        self.api_key_input.setEchoMode(QLineEdit.EchoMode.Password)
-        self.api_key_input.setPlaceholderText("sk-xxxxxxxx")
-        self.api_key_input.setMinimumWidth(300)
-        api_row2.addWidget(self.api_key_input)
-        api_row2.addWidget(QLabel("Base URL:"))
-        self.base_url_input = QLineEdit()
-        self.base_url_input.setPlaceholderText("https://api.deepseek.com/v1")
-        self.base_url_input.setMinimumWidth(250)
-        api_row2.addWidget(self.base_url_input)
-        self.btn_save_config = QPushButton("💾 保存配置")
-        api_row2.addWidget(self.btn_save_config)
-        api_row2.addStretch()
-        layout.addLayout(api_row2)
+        # 兼容旧引用（隐藏的虚拟控件）
+        self.provider_combo = QComboBox(); self.provider_combo.setVisible(False)
+        self.model_combo = QComboBox(); self.model_combo.setVisible(False)
+        self.api_key_input = QLineEdit(); self.api_key_input.setVisible(False)
+        self.base_url_input = QLineEdit(); self.base_url_input.setVisible(False)
+        self.btn_save_config = QPushButton(); self.btn_save_config.setVisible(False)
+        self.engine_combo = QComboBox(); self.engine_combo.setVisible(False)
 
-        self._on_provider_changed("DeepSeek")
-
-        # OpenClaw 配置行
-        oc_row = QHBoxLayout()
-        oc_row.addWidget(QLabel("OpenClaw:"))
-        self.openclaw_key_input = QLineEdit()
-        self.openclaw_key_input.setEchoMode(QLineEdit.EchoMode.Password)
-        self.openclaw_key_input.setPlaceholderText("OpenClaw API Key（自主仓用）")
-        self.openclaw_key_input.setMinimumWidth(300)
-        oc_row.addWidget(self.openclaw_key_input)
-        self.btn_save_openclaw = QPushButton("💾 保存 OpenClaw")
-        oc_row.addWidget(self.btn_save_openclaw)
-        self.engine_combo = QComboBox()
-        self.engine_combo.addItems(["DeepSeek/GPT（直接API）", "OpenClaw Agent"])
-        self.engine_combo.setToolTip("自主仓决策引擎：直接 API 或通过 OpenClaw Agent")
-        oc_row.addWidget(QLabel("自主仓引擎:"))
-        oc_row.addWidget(self.engine_combo)
-        oc_row.addStretch()
-        layout.addLayout(oc_row)
-
-        # 操作行
-        action_row = QHBoxLayout()
-        self.btn_full_auto = QPushButton("🚀 完全自主仓")
-        self.btn_full_auto.setStyleSheet("font-size: 13px; padding: 8px 16px; background: #7b1fa2;")
+        # 操作行（4仓：完全自主 / AI推荐 / 自定义 / 量子）
+        action_row1 = QHBoxLayout()
+        self.btn_full_auto = QPushButton("🟣 完全自主仓")
+        self.btn_full_auto.setStyleSheet("font-size: 13px; padding: 8px 20px; background: #7b1fa2;")
         self.btn_full_auto.setToolTip("AI 全权决策+自动执行，无需人工确认")
-        action_row.addWidget(self.btn_full_auto)
-        self.btn_auto_run = QPushButton("🔄 半自主仓")
-        self.btn_auto_run.setStyleSheet("font-size: 13px; padding: 8px 16px; background: #d32f2f;")
-        self.btn_auto_run.setToolTip("AI 决策+执行，需人工触发（半自主仓）")
-        action_row.addWidget(self.btn_auto_run)
-        self.btn_run_ai = QPushButton("🤖 推荐仓建议")
-        self.btn_run_ai.setStyleSheet("font-size: 13px; padding: 8px 16px; background: #FF6F00;")
-        self.btn_run_ai.setToolTip("AI 给出建议，你确认后执行（推荐仓）")
-        action_row.addWidget(self.btn_run_ai)
-        self.btn_execute = QPushButton("▶ 确认执行")
-        self.btn_execute.setStyleSheet("background: #388e3c; font-size: 13px; padding: 8px 16px;")
-        self.btn_execute.setEnabled(False)
-        action_row.addWidget(self.btn_execute)
-        self.btn_custom_scan = QPushButton("📌 自定义仓(扫描Top3)")
-        self.btn_custom_scan.setStyleSheet("font-size: 12px; padding: 8px 14px; background: #00695c;")
-        self.btn_custom_scan.setToolTip("买入选股雷达扫描结果 Top3 到自定义仓")
-        action_row.addWidget(self.btn_custom_scan)
+        action_row1.addWidget(self.btn_full_auto)
+        self.btn_auto_run = QPushButton("🔵 AI推荐仓")
+        self.btn_auto_run.setStyleSheet("font-size: 13px; padding: 8px 20px; background: #1565C0;")
+        self.btn_auto_run.setToolTip("AI 分析市场并推荐买卖，人工确认后执行")
+        action_row1.addWidget(self.btn_auto_run)
+        self.btn_custom_scan = QPushButton("📌 自定义仓(Top3)")
+        self.btn_custom_scan.setStyleSheet("font-size: 13px; padding: 8px 20px; background: #00695c;")
+        self.btn_custom_scan.setToolTip("买入选股雷达 Top3 到自定义仓")
+        action_row1.addWidget(self.btn_custom_scan)
+        self.btn_quantum_buy = QPushButton("⚛️ 量子仓买入")
+        self.btn_quantum_buy.setStyleSheet("font-size: 13px; padding: 8px 20px; background:#4a148c;")
+        self.btn_quantum_buy.setToolTip("量子优化选出的最优组合")
+        action_row1.addWidget(self.btn_quantum_buy)
+        action_row1.addStretch()
+        layout.addLayout(action_row1)
+
+        # 辅助操作行
+        action_row2 = QHBoxLayout()
         self.btn_custom_calibrate = QPushButton("📊 校准跟踪")
-        self.btn_custom_calibrate.setStyleSheet("font-size: 12px; padding: 8px 14px;")
-        self.btn_custom_calibrate.setToolTip("对比自定义仓买入后 5日/1月/1季/半年的实际表现")
-        action_row.addWidget(self.btn_custom_calibrate)
-        action_row.addStretch()
-        layout.addLayout(action_row)
+        self.btn_custom_calibrate.setStyleSheet("font-size: 11px; padding: 6px 12px;")
+        action_row2.addWidget(self.btn_custom_calibrate)
+        action_row2.addStretch()
+        layout.addLayout(action_row2)
+
+        # 兼容旧引用
+        self.btn_run_ai = QPushButton(); self.btn_run_ai.setVisible(False)
+        self.btn_execute = QPushButton(); self.btn_execute.setVisible(False)
 
         # 板块多选区
         board_frame = QFrame()
@@ -133,8 +96,7 @@ class AIPortfolioPanel(QWidget):
         for bn in _BOARDS:
             cb = QCheckBox(bn)
             cb.setStyleSheet("font-size:12px; padding:2px 4px;")
-            if bn in ("人工智能", "芯片", "量子科技"):
-                cb.setChecked(True)
+            cb.setChecked(True)
             board_grid.addWidget(cb)
             self._board_checkboxes[bn] = cb
         board_inner.addLayout(board_grid)
@@ -219,7 +181,7 @@ class AIPortfolioPanel(QWidget):
             lbl.setFont(QFont("", 10, QFont.Weight.Bold))
             lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
             cg.addWidget(lbl, 0, j + 1)
-        for i, mode_label in enumerate(["🟣 完全自主仓(AI全权)", "🔴 半自主仓(AI+触发)", "🟢 推荐仓(AI+人工)", "📌 自定义仓(Top3跟踪)"]):
+        for i, mode_label in enumerate(["🟣 完全自主仓(AI全权)", "🔵 AI推荐仓(AI+确认)", "📌 自定义仓(Top3)", "⚛️ 量子仓(QAOA/QA)"]):
             lbl = QLabel(mode_label)
             lbl.setFont(QFont("", 10, QFont.Weight.Bold))
             cg.addWidget(lbl, i + 1, 0)
@@ -233,18 +195,65 @@ class AIPortfolioPanel(QWidget):
                 self.comp_labels[(i, j)] = lbl
         layout.addWidget(comp_box)
 
-        summary_box = QGroupBox("自主仓持仓")
+        summary_box = QGroupBox("全仓持仓汇总")
         sg = QVBoxLayout(summary_box)
 
         self.pos_table = QTableWidget()
-        self.pos_table.setColumnCount(9)
+        self.pos_table.setColumnCount(10)
         self.pos_table.setHorizontalHeaderLabels([
-            "代码", "名称", "买入价", "现价", "盈亏%", "股数", "市值", "买入日", "建议",
+            "仓位类型", "代码", "名称", "买入价", "现价", "盈亏%", "股数", "市值", "买入日", "建议",
         ])
         self.pos_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.pos_table.setAlternatingRowColors(True)
         self.pos_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        layout.addWidget(self.pos_table)
+        self.pos_table.setSortingEnabled(True)
+        sg.addWidget(self.pos_table)
+
+        # 单击操作栏
+        self.action_bar = QWidget()
+        self.action_bar.setVisible(False)
+        ab = QHBoxLayout(self.action_bar)
+        ab.setContentsMargins(0, 4, 0, 4)
+        self.action_stock_label = QLabel("")
+        self.action_stock_label.setFont(QFont("", 11, QFont.Weight.Bold))
+        self.action_stock_label.setStyleSheet("color:#4fc3f7;")
+        ab.addWidget(self.action_stock_label)
+
+        self.btn_action_detail = QPushButton("📋 明细")
+        self.btn_action_detail.setStyleSheet("padding:6px 14px;")
+        ab.addWidget(self.btn_action_detail)
+
+        self.btn_action_buy = QPushButton("🛒 买入")
+        self.btn_action_buy.setStyleSheet("padding:6px 14px; background:#2E7D32;")
+        ab.addWidget(self.btn_action_buy)
+
+        self.btn_action_sell = QPushButton("📤 卖出")
+        self.btn_action_sell.setStyleSheet("padding:6px 14px; background:#C62828;")
+        ab.addWidget(self.btn_action_sell)
+
+        self.btn_action_condition = QPushButton("⏰ 条件单")
+        self.btn_action_condition.setStyleSheet("padding:6px 14px;")
+        ab.addWidget(self.btn_action_condition)
+
+        self.btn_action_chart = QPushButton("📈 看行情")
+        self.btn_action_chart.setStyleSheet("padding:6px 14px; background:#1565C0;")
+        ab.addWidget(self.btn_action_chart)
+
+        self.btn_action_ai_suggest = QPushButton("🦀 AI研判")
+        self.btn_action_ai_suggest.setStyleSheet("padding:6px 14px; background:#E65100; color:white;")
+        ab.addWidget(self.btn_action_ai_suggest)
+
+        ab.addStretch()
+
+        self.ai_suggest_label = QLabel("")
+        self.ai_suggest_label.setStyleSheet("color:#4fc3f7; font-size:12px; padding:4px;")
+        self.ai_suggest_label.setWordWrap(True)
+        self.ai_suggest_label.setVisible(False)
+
+        sg.addWidget(self.action_bar)
+        sg.addWidget(self.ai_suggest_label)
+
+        layout.addWidget(summary_box)
         return w
 
     def _build_decisions_tab(self) -> QWidget:
@@ -277,12 +286,30 @@ class AIPortfolioPanel(QWidget):
         layout.addWidget(self.log_table)
         return w
 
-    def update_summary(self, auto_state: dict, manual_state: dict, prices: dict, comp: dict):
+    # 仓位类型配色
+    _MODE_COLORS = {
+        "full_auto": ("#CE93D8", "🟣 完全自主"),
+        "auto":      ("#4FC3F7", "🔵 AI推荐"),
+        "custom":    ("#FF7043", "📌 自定义"),
+        "quantum":   ("#66BB6A", "⚛️ 量子仓"),
+    }
+
+    def update_summary(self, all_states: dict, prices: dict, comp: dict):
+        """4仓对比: full_auto / auto / custom / quantum"""
         red = QColor("#ef5350")
         green = QColor("#26a69a")
 
-        # 对比表
-        for i, mode_key in enumerate(["full_auto", "auto", "manual", "custom"]):
+        # 合并原 auto + manual 的数据到 auto
+        if "manual" in comp:
+            # 把 manual 的交易数和盈亏合并到 auto
+            auto_c = comp.get("auto", {})
+            manual_c = comp.get("manual", {})
+            if manual_c.get("total_trades", 0) > 0 and auto_c:
+                auto_c["total_trades"] = auto_c.get("total_trades", 0) + manual_c.get("total_trades", 0)
+                auto_c["total_pnl"] = auto_c.get("total_pnl", 0) + manual_c.get("total_pnl", 0)
+
+        # 对比表（4仓）
+        for i, mode_key in enumerate(["full_auto", "auto", "custom", "quantum"]):
             c = comp.get(mode_key, {})
             vals = [
                 f"¥{c.get('equity', 0):,.0f}",
@@ -302,24 +329,48 @@ class AIPortfolioPanel(QWidget):
                         except Exception:
                             pass
 
-        # 自主仓持仓表
-        positions = auto_state.get("positions", [])
-        self.pos_table.setRowCount(len(positions))
-        for i, p in enumerate(positions):
-            price = prices.get(p["code"], p["entry_price"])
-            pnl_pct = (price - p["entry_price"]) / p["entry_price"] * 100
-            mv = price * p["shares"]
+        # 合并全部仓位到一张表（4仓，manual归入auto显示）
+        merged = []
+        for mode_key in ["full_auto", "auto", "manual", "custom", "quantum"]:
+            # manual 的持仓显示为 auto（AI推荐仓）
+            display_key = "auto" if mode_key == "manual" else mode_key
+            state = all_states.get(mode_key, {})
+            for p in state.get("positions", []):
+                merged.append((display_key, p))
+
+        self.pos_table.setSortingEnabled(False)
+        self.pos_table.setRowCount(len(merged))
+        for i, (mode_key, p) in enumerate(merged):
+            color_hex, label = self._MODE_COLORS.get(mode_key, ("#888", mode_key))
+            entry_price = p.get("entry_price", 0) or 0
+            price = prices.get(p.get("code", ""), entry_price)
+            pnl_pct = (price - entry_price) / entry_price * 100 if entry_price > 0 else 0
+            mv = price * p.get("shares", 0)
+
+            # 仓位类型列
+            type_item = QTableWidgetItem(label)
+            type_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            type_item.setForeground(QColor(color_hex))
+            type_item.setFont(QFont("", 10, QFont.Weight.Bold))
+            self.pos_table.setItem(i, 0, type_item)
+
             vals = [
-                p["code"], p.get("name", ""), f"{p['entry_price']:.2f}",
-                f"{price:.2f}", f"{pnl_pct:+.2f}%", str(p["shares"]),
-                f"¥{mv:,.0f}", p.get("entry_date", ""), "",
+                p.get("code", ""), p.get("name", ""),
+                f"{entry_price:.2f}" if entry_price else "-",
+                f"{price:.2f}" if price else "-",
+                f"{pnl_pct:+.2f}%",
+                str(p.get("shares", 0)),
+                f"¥{mv:,.0f}",
+                p.get("entry_date", ""),
+                p.get("suggestion", ""),
             ]
             for j, v in enumerate(vals):
                 item = QTableWidgetItem(v)
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 if j == 4:
                     item.setForeground(red if pnl_pct > 0 else green if pnl_pct < 0 else QColor("#888"))
-                self.pos_table.setItem(i, j, item)
+                self.pos_table.setItem(i, j + 1, item)
+        self.pos_table.setSortingEnabled(True)
 
     def update_decisions(self, decisions: list[dict]):
         self.decisions_table.setRowCount(len(decisions))
@@ -351,7 +402,7 @@ class AIPortfolioPanel(QWidget):
             log["_mode"] = "自主仓"
             all_logs.append(log)
         for log in manual_logs:
-            log["_mode"] = "推荐仓"
+            log["_mode"] = "AI推荐仓"
             all_logs.append(log)
         all_logs.sort(key=lambda x: x.get("time", ""), reverse=True)
 

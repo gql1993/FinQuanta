@@ -10,12 +10,10 @@
 """
 import os
 import json
-import sqlite3
 import numpy as np
 import urllib.request
 from datetime import datetime, date, timedelta
-
-DB_PATH = os.path.join("data_cache", "quant.db")
+from desktop.data_access import RepoCompatConnection
 
 # 报告期节点
 REPORT_PERIODS = {
@@ -39,7 +37,7 @@ DISCLOSURE_DATES = {
 
 
 def _init_fund_table():
-    conn = sqlite3.connect(DB_PATH, timeout=5)
+    conn = RepoCompatConnection()
     conn.executescript("""
     CREATE TABLE IF NOT EXISTS fund_holdings (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -265,7 +263,7 @@ def compute_change_types(current: list[dict], previous: list[dict]) -> list[dict
 
 def save_holdings(period: str, holdings: list[dict]):
     """保存基金持仓到数据库。"""
-    conn = sqlite3.connect(DB_PATH, timeout=5)
+    conn = RepoCompatConnection()
     ts = datetime.now().isoformat()
     for h in holdings:
         conn.execute(
@@ -281,7 +279,7 @@ def save_holdings(period: str, holdings: list[dict]):
 
 def get_holdings(period: str) -> list[dict]:
     """获取指定报告期的持仓。"""
-    conn = sqlite3.connect(DB_PATH, timeout=5)
+    conn = RepoCompatConnection()
     cur = conn.execute(
         "SELECT code, name, holding_funds, holding_value, change_type, sector "
         "FROM fund_holdings WHERE report_period=? ORDER BY holding_funds DESC",
@@ -302,7 +300,7 @@ def enrich_price_and_forecast(holdings: list[dict]) -> list[dict]:
     自动从网络补全缺失的日线数据。
     """
     _ensure_daily_data([h["code"] for h in holdings])
-    conn = sqlite3.connect(DB_PATH, timeout=5)
+    conn = RepoCompatConnection()
     for h in holdings:
         code = h["code"]
         cur = conn.execute(
@@ -432,7 +430,7 @@ def load_and_compare(period: str) -> list[dict]:
 
 def _ensure_daily_data(codes: list[str]):
     """检查并自动从网络补全缺失的日线数据。"""
-    conn = sqlite3.connect(DB_PATH, timeout=5)
+    conn = RepoCompatConnection()
     missing = []
     for code in codes:
         cur = conn.execute("SELECT COUNT(*) FROM daily_kline WHERE code=?", (code,))
@@ -446,7 +444,7 @@ def _ensure_daily_data(codes: list[str]):
         from desktop.data_sync import fetch_daily_tencent
     except ImportError:
         return
-    conn = sqlite3.connect(DB_PATH, timeout=5)
+    conn = RepoCompatConnection()
     for code in missing:
         try:
             rows = fetch_daily_tencent(code)
@@ -484,7 +482,7 @@ def analyze_post_disclosure(holdings: list[dict], period: str = "") -> list[dict
         except Exception:
             pass
 
-    conn = sqlite3.connect(DB_PATH, timeout=5)
+    conn = RepoCompatConnection()
     results = []
 
     for h in holdings[:50]:
@@ -1002,7 +1000,7 @@ def analyze_manager_pre_post(manager_name: str, period: str = "2025-Q3") -> list
         except Exception:
             pass
 
-    conn = sqlite3.connect(DB_PATH, timeout=5)
+    conn = RepoCompatConnection()
     results = []
 
     for h in holdings:

@@ -1,22 +1,27 @@
 """AI 助手面板 — 参考豆包/Kimi 风格设计"""
 import os
 import re
-import sqlite3
 from datetime import datetime
+
+from desktop.assistant_audit import get_action, list_action_logs, list_recent_actions
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTextEdit, QLineEdit, QComboBox, QSplitter, QListWidget,
-    QListWidgetItem, QAbstractItemView, QFrame, QScrollArea,
+    QListWidgetItem, QAbstractItemView, QFrame, QGridLayout,
 )
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFont, QColor
 
-DB_PATH = os.path.join("data_cache", "quant.db")
+from api_server.config import settings
+
+from desktop.data_access import RepoCompatConnection
 
 
 def _init_chat_table():
-    conn = sqlite3.connect(DB_PATH, timeout=5)
+    if settings.db_backend == "postgres":
+        return
+    conn = RepoCompatConnection()
     conn.execute("""
         CREATE TABLE IF NOT EXISTS ai_chat_history (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -31,7 +36,7 @@ _init_chat_table()
 
 
 def save_chat_msg(session_id: str, role: str, content: str):
-    conn = sqlite3.connect(DB_PATH, timeout=5)
+    conn = RepoCompatConnection()
     conn.execute(
         "INSERT INTO ai_chat_history (session_id, role, content, created_at) VALUES (?,?,?,?)",
         (session_id, role, content, datetime.now().isoformat()),
@@ -41,7 +46,7 @@ def save_chat_msg(session_id: str, role: str, content: str):
 
 
 def get_sessions(limit: int = 50) -> list[dict]:
-    conn = sqlite3.connect(DB_PATH, timeout=5)
+    conn = RepoCompatConnection()
     cur = conn.execute("""
         SELECT session_id, MIN(created_at), MAX(created_at), COUNT(*),
                (SELECT content FROM ai_chat_history h2
@@ -59,7 +64,7 @@ def get_sessions(limit: int = 50) -> list[dict]:
 
 
 def get_session_messages(session_id: str) -> list[dict]:
-    conn = sqlite3.connect(DB_PATH, timeout=5)
+    conn = RepoCompatConnection()
     cur = conn.execute(
         "SELECT role, content, created_at FROM ai_chat_history WHERE session_id=? ORDER BY id",
         (session_id,),
@@ -225,30 +230,86 @@ _QUICK_QUESTIONS = [
     ("⚡ 事件解读", "解读最近的事件选股结果，有哪些值得关注的机会？"),
 ]
 
+_CHAT_MODES = [
+    ("自动判断", "auto"),
+    ("查询", "query"),
+    ("执行", "run"),
+    ("修改", "update"),
+]
+
 
 class AIChatPanel(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(12)
+
+        header = QFrame()
+        header.setStyleSheet(
+            "QFrame { background:qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #111827, stop:1 #0f3460); "
+            "border:1px solid #22304a; border-radius:16px; }"
+        )
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(20, 18, 20, 18)
+        header_layout.setSpacing(12)
+
+        title_box = QVBoxLayout()
+        title_box.setSpacing(4)
+        title = QLabel("FinQuanta AI 助手")
+        title.setFont(QFont("", 18, QFont.Weight.Bold))
+        title.setStyleSheet("color:#e6edf3;")
+        title_box.addWidget(title)
+
+        subtitle = QLabel("应用内直接查询系统状态、解释异常、执行白名单任务，并对修改类动作进行确认。")
+        subtitle.setWordWrap(True)
+        subtitle.setStyleSheet("color:#9fb3c8; font-size:12px;")
+        title_box.addWidget(subtitle)
+        header_layout.addLayout(title_box, 1)
+
+        badge_wrap = QHBoxLayout()
+        badge_wrap.setSpacing(8)
+        for text, color in [
+            ("系统查询", "#1f6feb"),
+            ("任务执行", "#8b5cf6"),
+            ("变更确认", "#238636"),
+        ]:
+            chip = QLabel(text)
+            chip.setStyleSheet(
+                f"background:{color}; color:white; border-radius:12px; padding:6px 12px; font-size:11px; font-weight:bold;"
+            )
+            badge_wrap.addWidget(chip)
+        header_layout.addLayout(badge_wrap)
+        layout.addWidget(header)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter.setHandleWidth(10)
+        self._splitter = splitter
 
         # ===== 左侧边栏 =====
         sidebar = QFrame()
-        sidebar.setStyleSheet("background: #0d1117;")
-        sidebar.setMinimumWidth(200)
-        sidebar.setMaximumWidth(280)
+        sidebar.setStyleSheet("QFrame { background: #0f172a; border:1px solid #1f2937; border-radius:16px; }")
+        sidebar.setMinimumWidth(160)
+        sidebar.setMaximumWidth(260)
+        self._sidebar = sidebar
         sb_layout = QVBoxLayout(sidebar)
-        sb_layout.setContentsMargins(10, 12, 10, 10)
-        sb_layout.setSpacing(8)
+        sb_layout.setContentsMargins(14, 14, 14, 14)
+        sb_layout.setSpacing(10)
+
+        side_title = QLabel("对话管理")
+        side_title.setStyleSheet("color:#e6edf3; font-size:14px; font-weight:bold;")
+        sb_layout.addWidget(side_title)
+
+        side_desc = QLabel("查看历史会话、切换模型，管理当前系统助手会话。")
+        side_desc.setWordWrap(True)
+        side_desc.setStyleSheet("color:#8b949e; font-size:11px;")
+        sb_layout.addWidget(side_desc)
 
         self.btn_new_session = QPushButton("＋  新对话")
         self.btn_new_session.setStyleSheet(
-            "QPushButton { background:#21262d; color:#c9d1d9; border:1px solid #30363d; "
-            "border-radius:8px; padding:10px; font-size:13px; font-weight:bold; }"
-            "QPushButton:hover { background:#30363d; border-color:#58a6ff; }"
+            "QPushButton { background:#1f6feb; color:#ffffff; border:1px solid #3b82f6; "
+            "border-radius:10px; padding:10px; font-size:13px; font-weight:bold; }"
+            "QPushButton:hover { background:#3b82f6; }"
         )
         sb_layout.addWidget(self.btn_new_session)
 
@@ -260,22 +321,22 @@ class AIChatPanel(QWidget):
 
         self.session_list = QListWidget()
         self.session_list.setStyleSheet("""
-            QListWidget { background:transparent; border:none; }
+            QListWidget { background:#0b1220; border:1px solid #1f2937; border-radius:12px; padding:4px; }
             QListWidget::item {
-                color:#c9d1d9; padding:10px 8px; border-radius:8px; margin:1px 0;
+                color:#c9d1d9; padding:10px 8px; border-radius:10px; margin:3px 0;
                 font-size:12px;
             }
-            QListWidget::item:selected { background:#1f2937; }
-            QListWidget::item:hover { background:#161b22; }
+            QListWidget::item:selected { background:#1d4ed8; color:#ffffff; }
+            QListWidget::item:hover { background:#111827; }
         """)
         self.session_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         sb_layout.addWidget(self.session_list)
 
         self.btn_delete_session = QPushButton("删除选中对话")
         self.btn_delete_session.setStyleSheet(
-            "QPushButton { background:transparent; color:#8b949e; border:1px solid #21262d; "
-            "border-radius:6px; padding:6px; font-size:11px; }"
-            "QPushButton:hover { background:#21262d; color:#f85149; border-color:#f85149; }"
+            "QPushButton { background:#111827; color:#9ca3af; border:1px solid #1f2937; "
+            "border-radius:8px; padding:7px; font-size:11px; }"
+            "QPushButton:hover { background:#1f2937; color:#f87171; border-color:#f87171; }"
         )
         sb_layout.addWidget(self.btn_delete_session)
 
@@ -288,8 +349,8 @@ class AIChatPanel(QWidget):
         self.combo_provider = QComboBox()
         self.combo_provider.addItems(["DeepSeek", "OpenAI", "Gemini", "Claude", "通义千问", "Kimi"])
         self.combo_provider.setStyleSheet(
-            "QComboBox { background:#161b22; color:#c9d1d9; border:1px solid #30363d; "
-            "border-radius:6px; padding:6px 10px; font-size:12px; }"
+            "QComboBox { background:#0b1220; color:#c9d1d9; border:1px solid #1f2937; "
+            "border-radius:8px; padding:8px 10px; font-size:12px; }"
         )
         sb_layout.addWidget(self.combo_provider)
 
@@ -298,58 +359,167 @@ class AIChatPanel(QWidget):
         self.combo_model.setStyleSheet(self.combo_provider.styleSheet())
         sb_layout.addWidget(self.combo_model)
 
+        sb_layout.addWidget(self._make_divider())
+        action_hist_header = QHBoxLayout()
+        action_hist_title = QLabel("最近系统动作")
+        action_hist_title.setStyleSheet("color:#8b949e; font-size:11px; padding:4px 2px;")
+        action_hist_header.addWidget(action_hist_title)
+        action_hist_header.addStretch()
+        self.btn_refresh_actions = QPushButton("刷新")
+        self.btn_refresh_actions.setStyleSheet(
+            "QPushButton { background:#111827; color:#9ca3af; border:1px solid #1f2937; border-radius:8px; padding:5px 10px; font-size:11px; }"
+            "QPushButton:hover { color:#58a6ff; border-color:#58a6ff; }"
+        )
+        action_hist_header.addWidget(self.btn_refresh_actions)
+        sb_layout.addLayout(action_hist_header)
+
+        self.action_list = QListWidget()
+        self.action_list.setStyleSheet("""
+            QListWidget { background:#0b1220; border:1px solid #1f2937; border-radius:12px; padding:4px; }
+            QListWidget::item {
+                color:#cbd5e1; padding:9px 8px; border-radius:10px; margin:3px 0;
+                font-size:11px;
+            }
+            QListWidget::item:selected { background:#172554; color:#ffffff; }
+            QListWidget::item:hover { background:#111827; }
+        """)
+        self.action_list.setMaximumHeight(210)
+        self.action_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        sb_layout.addWidget(self.action_list)
+
+        self.action_detail_box = QLabel("点击上方系统动作可查看详情")
+        self.action_detail_box.setWordWrap(True)
+        self.action_detail_box.setStyleSheet(
+            "background:#0b1220; color:#94a3b8; border:1px solid #1f2937; border-radius:12px; padding:10px; font-size:11px;"
+        )
+        self.action_detail_box.setMinimumHeight(88)
+        sb_layout.addWidget(self.action_detail_box)
+
+        sb_layout.addStretch()
+
         splitter.addWidget(sidebar)
 
         # ===== 右侧主区 =====
         main_area = QFrame()
-        main_area.setStyleSheet("background: #0d1117;")
+        main_area.setStyleSheet("QFrame { background: #0b1220; border:1px solid #1f2937; border-radius:16px; }")
         main_layout = QVBoxLayout(main_area)
-        main_layout.setContentsMargins(0, 0, 0, 0)
-        main_layout.setSpacing(0)
+        main_layout.setContentsMargins(12, 12, 12, 12)
+        main_layout.setSpacing(10)
+
+        toolbar = QFrame()
+        toolbar.setStyleSheet("QFrame { background:#0f172a; border:1px solid #1f2937; border-radius:12px; }")
+        toolbar_layout = QHBoxLayout(toolbar)
+        toolbar_layout.setContentsMargins(14, 10, 14, 10)
+        toolbar_layout.setSpacing(10)
+        self.chat_mode_label = QLabel("模式:")
+        self.chat_mode_label.setStyleSheet("color:#e6edf3; font-size:13px; font-weight:bold;")
+        toolbar_layout.addWidget(self.chat_mode_label)
+        self.combo_chat_mode = QComboBox()
+        for label, value in _CHAT_MODES:
+            self.combo_chat_mode.addItem(label, value)
+        self.combo_chat_mode.setCurrentIndex(0)
+        self.combo_chat_mode.setStyleSheet(
+            "QComboBox { background:#111827; color:#e6edf3; border:1px solid #253246; border-radius:10px; padding:8px 12px; min-width:110px; }"
+        )
+        toolbar_layout.addWidget(self.combo_chat_mode)
+        mode_desc = QLabel("系统类请求会先走本地执行链路，普通投研问题自动回退到大模型。")
+        mode_desc.setStyleSheet("color:#8b949e; font-size:11px;")
+        toolbar_layout.addWidget(mode_desc, 1)
+        main_layout.addWidget(toolbar)
 
         # 聊天展示区
         self.chat_display = QTextEdit()
         self.chat_display.setReadOnly(True)
-        self.chat_display.setStyleSheet(
-            "QTextEdit { background:#0d1117; border:none; padding:20px 40px; "
-            "font-size:14px; color:#c9d1d9; selection-background-color:#264f78; }"
-        )
+        self.chat_display.setFrameShape(QFrame.Shape.NoFrame)
+        self.chat_display.setStyleSheet("")
         self._show_welcome()
         main_layout.addWidget(self.chat_display)
 
         # 快捷问题栏
         self.quick_bar = QFrame()
-        self.quick_bar.setStyleSheet("background:#0d1117; padding:4px 30px;")
-        qb_layout = QHBoxLayout(self.quick_bar)
-        qb_layout.setContentsMargins(10, 0, 10, 0)
-        qb_layout.setSpacing(8)
+        self.quick_bar.setStyleSheet("QFrame { background:#0f172a; border:1px solid #1f2937; border-radius:12px; }")
+        qb_layout = QGridLayout(self.quick_bar)
+        qb_layout.setContentsMargins(12, 12, 12, 12)
+        qb_layout.setHorizontalSpacing(8)
+        qb_layout.setVerticalSpacing(8)
+        self._quick_layout = qb_layout
         self._quick_buttons = []
-        for label, question in _QUICK_QUESTIONS:
+        for idx, (label, question) in enumerate(_QUICK_QUESTIONS):
             btn = QPushButton(label)
             btn.setStyleSheet(
-                "QPushButton { background:#161b22; color:#8b949e; border:1px solid #30363d; "
-                "border-radius:16px; padding:6px 14px; font-size:11px; }"
-                "QPushButton:hover { background:#21262d; color:#58a6ff; border-color:#58a6ff; }"
+                "QPushButton { background:#111827; color:#cbd5e1; border:1px solid #253246; "
+                "border-radius:16px; padding:8px 12px; font-size:11px; text-align:left; }"
+                "QPushButton:hover { background:#172033; color:#58a6ff; border-color:#58a6ff; }"
             )
             btn.setProperty("question", question)
             btn.clicked.connect(self._on_quick_click)
-            qb_layout.addWidget(btn)
+            btn.setMinimumHeight(36)
             self._quick_buttons.append(btn)
-        qb_layout.addStretch()
+        self._reflow_quick_buttons(3)
         main_layout.addWidget(self.quick_bar)
+
+        # 系统助手动作卡片
+        self.action_card = QFrame()
+        self.action_card.setVisible(False)
+        self.action_card.setStyleSheet(
+            "QFrame { background:#111827; border:1px solid #253246; border-radius:12px; }"
+        )
+        action_layout = QVBoxLayout(self.action_card)
+        action_layout.setContentsMargins(18, 14, 18, 14)
+        action_layout.setSpacing(8)
+
+        self.action_title = QLabel("待确认操作")
+        self.action_title.setStyleSheet("color:#58a6ff; font-size:13px; font-weight:bold;")
+        action_layout.addWidget(self.action_title)
+
+        self.action_risk_badge = QLabel("")
+        self.action_risk_badge.setVisible(False)
+        self.action_risk_badge.setStyleSheet(
+            "background:#1d4ed8; color:#ffffff; border-radius:10px; padding:4px 10px; font-size:11px; font-weight:bold;"
+        )
+        action_layout.addWidget(self.action_risk_badge, alignment=Qt.AlignmentFlag.AlignLeft)
+
+        self.action_summary = QLabel("")
+        self.action_summary.setWordWrap(True)
+        self.action_summary.setStyleSheet("color:#c9d1d9; font-size:12px;")
+        action_layout.addWidget(self.action_summary)
+
+        self.action_detail = QLabel("")
+        self.action_detail.setWordWrap(True)
+        self.action_detail.setStyleSheet("color:#8b949e; font-size:11px;")
+        action_layout.addWidget(self.action_detail)
+
+        action_btn_row = QHBoxLayout()
+        action_btn_row.setContentsMargins(0, 4, 0, 0)
+        self.btn_confirm_action = QPushButton("确认执行")
+        self.btn_confirm_action.setStyleSheet(
+            "QPushButton { background:#238636; color:#fff; border:none; border-radius:8px; padding:8px 16px; font-size:12px; font-weight:bold; }"
+            "QPushButton:hover { background:#2ea043; }"
+            "QPushButton:disabled { background:#21262d; color:#484f58; }"
+        )
+        action_btn_row.addWidget(self.btn_confirm_action)
+        self.btn_cancel_action = QPushButton("取消")
+        self.btn_cancel_action.setStyleSheet(
+            "QPushButton { background:#21262d; color:#c9d1d9; border:1px solid #30363d; border-radius:8px; padding:8px 16px; font-size:12px; }"
+            "QPushButton:hover { border-color:#f85149; color:#f85149; }"
+        )
+        action_btn_row.addWidget(self.btn_cancel_action)
+        action_btn_row.addStretch()
+        action_layout.addLayout(action_btn_row)
+        main_layout.addWidget(self.action_card)
 
         # 输入区
         input_frame = QFrame()
-        input_frame.setStyleSheet("background:#161b22; border-top:1px solid #21262d; padding:12px 30px;")
+        input_frame.setStyleSheet("QFrame { background:#0f172a; border:1px solid #1f2937; border-radius:14px; }")
         input_layout = QHBoxLayout(input_frame)
-        input_layout.setContentsMargins(10, 8, 10, 8)
+        input_layout.setContentsMargins(14, 12, 14, 12)
         input_layout.setSpacing(10)
 
         self.msg_input = QLineEdit()
-        self.msg_input.setPlaceholderText("给 AI 助手发消息...")
+        self.msg_input.setPlaceholderText("输入系统问题、异常解释、执行指令，或继续普通 AI 对话...")
         self.msg_input.setStyleSheet(
-            "QLineEdit { background:#0d1117; color:#c9d1d9; border:1px solid #30363d; "
-            "border-radius:12px; padding:12px 18px; font-size:14px; }"
+            "QLineEdit { background:#0b1220; color:#c9d1d9; border:1px solid #253246; "
+            "border-radius:12px; padding:12px 16px; font-size:14px; }"
             "QLineEdit:focus { border-color:#58a6ff; }"
         )
         input_layout.addWidget(self.msg_input)
@@ -365,19 +535,24 @@ class AIChatPanel(QWidget):
         main_layout.addWidget(input_frame)
 
         splitter.addWidget(main_area)
-        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 1)
-        splitter.setSizes([230, 700])
+        splitter.setSizes([220, 980])
         layout.addWidget(splitter)
 
         self._current_session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
         self._has_messages = False
+        self._pending_action_id = ""
 
         self.btn_new_session.clicked.connect(self._new_session)
         self.session_list.currentItemChanged.connect(self._on_session_selected)
         self.btn_delete_session.clicked.connect(self._delete_session)
+        self.btn_refresh_actions.clicked.connect(self.refresh_action_history)
+        self.action_list.currentItemChanged.connect(self._on_action_selected)
 
+        self._apply_chat_display_style(28)
         self.refresh_sessions()
+        self.refresh_action_history()
 
     @staticmethod
     def _make_divider() -> QFrame:
@@ -388,17 +563,19 @@ class AIChatPanel(QWidget):
 
     def _show_welcome(self):
         self.chat_display.setHtml("""
-        <div style="text-align:center; padding:60px 20px;">
-            <div style="font-size:48px;">🤖</div>
-            <div style="font-size:22px; font-weight:bold; color:#58a6ff; margin:16px 0 8px;">
-                AetherQuant AI
-            </div>
-            <div style="font-size:13px; color:#8b949e; line-height:1.8;">
-                我可以读取你的持仓、策略、回测、事件选股等全部数据<br>
-                帮你分析实操表现、优化策略参数、研判市场机会
-            </div>
-            <div style="margin-top:30px; color:#484f58; font-size:12px;">
-                点击下方快捷按钮或直接输入问题开始对话
+        <div style="padding:24px 8px 36px 8px;">
+            <div style="background:linear-gradient(180deg,#111827,#0f172a); border:1px solid #253246; border-radius:18px; padding:28px 24px;">
+                <div style="font-size:44px; margin-bottom:10px;">🤖</div>
+                <div style="font-size:24px; font-weight:bold; color:#58a6ff; margin-bottom:8px;">
+                    FinQuanta 系统助手
+                </div>
+                <div style="font-size:13px; color:#94a3b8; line-height:1.9;">
+                    我可以读取持仓、任务、走势验证、运行中心和系统快照数据，<br>
+                    也可以在白名单范围内帮你执行系统动作，并在执行前要求你确认。
+                </div>
+                <div style="margin-top:18px; font-size:12px; color:#64748b;">
+                    示例：为什么走势验证很多为空 / 刷新系统快照 / 重新跑一次走势验证校准
+                </div>
             </div>
         </div>
         """)
@@ -416,6 +593,7 @@ class AIChatPanel(QWidget):
         self._has_messages = False
         self._show_welcome()
         self.quick_bar.setVisible(True)
+        self.clear_pending_action()
 
     def _on_session_selected(self, current, previous):
         if not current:
@@ -428,6 +606,7 @@ class AIChatPanel(QWidget):
         self.chat_display.clear()
         self._has_messages = bool(msgs)
         self.quick_bar.setVisible(not self._has_messages)
+        self.clear_pending_action()
         for m in msgs:
             self.append_message(m["role"], m["content"], save=False)
 
@@ -438,7 +617,7 @@ class AIChatPanel(QWidget):
         sid = item.data(Qt.ItemDataRole.UserRole)
         if not sid:
             return
-        conn = sqlite3.connect(DB_PATH, timeout=5)
+        conn = RepoCompatConnection()
         conn.execute("DELETE FROM ai_chat_history WHERE session_id=?", (sid,))
         conn.commit()
         conn.close()
@@ -455,6 +634,43 @@ class AIChatPanel(QWidget):
             item.setData(Qt.ItemDataRole.UserRole, s["session_id"])
             self.session_list.addItem(item)
 
+    def refresh_action_history(self):
+        self.action_list.clear()
+        for item_data in list_recent_actions(8):
+            status = self._format_action_status(item_data.get("status", "pending"))
+            title = item_data.get("action_key") or item_data.get("intent") or "-"
+            user_text = (item_data.get("user_text") or "")[:26]
+            ts = (item_data.get("created_at") or "")[11:16]
+            item = QListWidgetItem(f"{status} {title}\n{user_text}\n{ts}")
+            item.setData(Qt.ItemDataRole.UserRole, item_data.get("id", ""))
+            self.action_list.addItem(item)
+        if self.action_list.count() == 0:
+            self.action_detail_box.setText("暂无系统动作记录")
+
+    def _on_action_selected(self, current, previous):
+        if not current:
+            return
+        action_id = current.data(Qt.ItemDataRole.UserRole)
+        if not action_id:
+            return
+        action = get_action(action_id)
+        logs = list_action_logs(action_id)
+        if not action:
+            self.action_detail_box.setText("动作详情读取失败")
+            return
+        lines = [
+            f"动作: {action.get('action_key', '-')}",
+            f"状态: {action.get('status', '-')}",
+            f"风险: {action.get('risk_level', '-')}",
+            f"时间: {(action.get('created_at') or '')[:16]}",
+            f"输入: {(action.get('user_text') or '')[:36]}",
+        ]
+        if action.get("error_text"):
+            lines.append(f"错误: {action['error_text'][:60]}")
+        if logs:
+            lines.append(f"最后日志: {(logs[-1].get('message') or '')[:60]}")
+        self.action_detail_box.setText("\n".join(lines))
+
     @property
     def session_id(self) -> str:
         return self._current_session_id
@@ -469,9 +685,9 @@ class AIChatPanel(QWidget):
 
         if role == "user":
             html = (
-                f'<div style="margin:16px 16px 4px 120px;">'
+                f'<div style="margin:16px 12px 4px 88px;">'
                 f'<div style="text-align:right;color:#8b949e;font-size:10px;margin-bottom:3px;">你 · {ts}</div>'
-                f'<div style="background:#1f6feb;color:#fff;border-radius:16px 16px 4px 16px;'
+                f'<div style="background:linear-gradient(90deg,#1d4ed8,#1f6feb);color:#fff;border-radius:18px 18px 4px 18px;'
                 f'padding:12px 18px;font-size:14px;line-height:1.6;text-align:left;">'
                 f'{text}</div></div>'
             )
@@ -479,7 +695,7 @@ class AIChatPanel(QWidget):
             content = _md_to_html(text)
             # Manus 风格：带头像 + 标签 + 结构化卡片
             html = (
-                f'<div style="margin:16px 60px 4px 16px;">'
+                f'<div style="margin:16px 24px 4px 8px;">'
                 # 头部：avatar + name + timestamp
                 f'<div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;">'
                 f'<span style="background:#238636;color:#fff;border-radius:6px;padding:2px 6px;'
@@ -487,23 +703,23 @@ class AIChatPanel(QWidget):
                 f'<span style="color:#58a6ff;font-size:12px;font-weight:bold;">量化助手</span>'
                 f'<span style="color:#484f58;font-size:10px;">{ts}</span></div>'
                 # 内容卡片
-                f'<div style="background:#0d1117;color:#c9d1d9;border-radius:4px 12px 12px 12px;'
+                f'<div style="background:#0f172a;color:#c9d1d9;border-radius:8px 16px 16px 16px;'
                 f'padding:16px 20px;font-size:13px;line-height:1.7;'
-                f'border:1px solid #21262d;box-shadow:0 1px 3px rgba(0,0,0,0.3);">'
+                f'border:1px solid #253246;box-shadow:0 6px 16px rgba(0,0,0,0.18);">'
                 f'{content}</div></div>'
             )
         elif role == "thinking":
             # Manus 风格：思考过程
             html = (
-                f'<div style="margin:8px 60px 4px 16px;">'
-                f'<div style="background:#1c2128;border:1px solid #30363d;border-radius:8px;'
+                f'<div style="margin:8px 24px 4px 8px;">'
+                f'<div style="background:#111827;border:1px solid #253246;border-radius:10px;'
                 f'padding:10px 14px;color:#8b949e;font-size:12px;">'
                 f'<span style="color:#d29922;">⏳ 思考中...</span> {text}</div></div>'
             )
         else:
             html = (
-                f'<div style="text-align:center;margin:10px 60px;">'
-                f'<div style="display:inline-block;background:#161b22;border:1px solid #30363d;'
+                f'<div style="text-align:center;margin:10px 24px;">'
+                f'<div style="display:inline-block;background:#111827;border:1px solid #253246;'
                 f'border-radius:20px;padding:5px 16px;">'
                 f'<span style="color:#d29922;font-size:11px;">⚙️ {text}</span></div></div>'
             )
@@ -517,3 +733,133 @@ class AIChatPanel(QWidget):
 
     def clear_input(self):
         self.msg_input.clear()
+
+    def show_pending_action(self, action_id: str, preview: dict | None = None, intent: dict | None = None):
+        preview = preview or {}
+        intent = intent or {}
+        self._pending_action_id = action_id or ""
+        risk_level = intent.get("risk_level", "low")
+        risk_style = self._risk_style(risk_level)
+        self.action_card.setStyleSheet(
+            f"QFrame {{ background:{risk_style['bg']}; border:1px solid {risk_style['border']}; border-radius:12px; }}"
+        )
+        self.action_title.setText(preview.get("title", "待确认操作"))
+        self.action_title.setStyleSheet(
+            f"color:{risk_style['title']}; font-size:13px; font-weight:bold;"
+        )
+        self.action_risk_badge.setText(f"{risk_style['label']} 风险")
+        self.action_risk_badge.setStyleSheet(
+            f"background:{risk_style['badge_bg']}; color:#ffffff; border-radius:10px; padding:4px 10px; font-size:11px; font-weight:bold;"
+        )
+        self.action_risk_badge.setVisible(True)
+        self.action_summary.setText(
+            f"动作: {intent.get('action_key', '-')}\n说明: {preview.get('title', '请确认是否执行该系统动作。')}"
+        )
+        before = preview.get("before", {})
+        after = preview.get("after", {})
+        lines = []
+        if before:
+            lines.append(f"变更前: {before}")
+        if after:
+            lines.append(f"变更后: {after}")
+        if intent.get("requires_confirmation"):
+            lines.append("执行前需要你的确认，完成后会写入系统动作审计日志。")
+        self.action_detail.setText("\n".join(lines) if lines else "请确认是否执行该系统动作。")
+        self.action_card.setVisible(True)
+        self.refresh_action_history()
+
+    def clear_pending_action(self):
+        self._pending_action_id = ""
+        self.action_card.setStyleSheet(
+            "QFrame { background:#111827; border:1px solid #253246; border-radius:12px; }"
+        )
+        self.action_title.setText("待确认操作")
+        self.action_title.setStyleSheet("color:#58a6ff; font-size:13px; font-weight:bold;")
+        self.action_risk_badge.setText("")
+        self.action_risk_badge.setVisible(False)
+        self.action_summary.setText("")
+        self.action_detail.setText("")
+        self.action_card.setVisible(False)
+
+    @property
+    def pending_action_id(self) -> str:
+        return self._pending_action_id
+
+    def _apply_chat_display_style(self, horizontal_padding: int):
+        self.chat_display.setStyleSheet(
+            "QTextEdit { "
+            "background:#0b1220; color:#c9d1d9; border:1px solid #1f2937; border-radius:16px; "
+            f"padding:20px {horizontal_padding}px; font-size:14px; selection-background-color:#264f78; "
+            "}"
+        )
+
+    @property
+    def current_mode(self) -> str:
+        return self.combo_chat_mode.currentData() or "auto"
+
+    @staticmethod
+    def _risk_style(level: str) -> dict:
+        styles = {
+            "low": {
+                "label": "低",
+                "bg": "#0f172a",
+                "border": "#1d4ed8",
+                "title": "#60a5fa",
+                "badge_bg": "#1d4ed8",
+            },
+            "medium": {
+                "label": "中",
+                "bg": "#1c1917",
+                "border": "#d97706",
+                "title": "#f59e0b",
+                "badge_bg": "#d97706",
+            },
+            "high": {
+                "label": "高",
+                "bg": "#1f1315",
+                "border": "#dc2626",
+                "title": "#f87171",
+                "badge_bg": "#dc2626",
+            },
+        }
+        return styles.get(level, styles["low"])
+
+    @staticmethod
+    def _format_action_status(status: str) -> str:
+        mapping = {
+            "pending": "⏳",
+            "confirmed": "🟡",
+            "executed": "✅",
+            "failed": "❌",
+            "cancelled": "⛔",
+        }
+        return mapping.get(status, "•")
+
+    def _reflow_quick_buttons(self, columns: int):
+        while self._quick_layout.count():
+            item = self._quick_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(self.quick_bar)
+        for idx, btn in enumerate(self._quick_buttons):
+            self._quick_layout.addWidget(btn, idx // columns, idx % columns)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        width = self.width()
+        if width < 1100:
+            sidebar_w = 170
+            chat_pad = 16
+            quick_cols = 1
+        elif width < 1500:
+            sidebar_w = 190
+            chat_pad = 22
+            quick_cols = 2
+        else:
+            sidebar_w = 220
+            chat_pad = 28
+            quick_cols = 3
+        self._sidebar.setMinimumWidth(sidebar_w)
+        self._sidebar.setMaximumWidth(sidebar_w + 40)
+        self._apply_chat_display_style(chat_pad)
+        self._reflow_quick_buttons(quick_cols)

@@ -1,0 +1,49 @@
+{
+  "pages": [
+    "pages/login/login",
+    "pages/dashboard/dashboard",
+    "pages/scan/scan",
+    "pages/portfolio/portfolio",
+    "pages/openclaw/openclaw",
+    "pages/messages/messages",
+    "pages/stock/stock",
+    "pages/verify/verify"
+  ],
+  "window": {
+    "navigationBarTitleText": "FinQuanta",
+    "navigationBarBackgroundColor": "#0d1117",
+    "navigationBarTextStyle": "white",
+    "backgroundColor": "#0d1117",
+    "backgroundTextStyle": "light"
+  },
+  "tabBar": {
+    "color": "#8b949e",
+    "selectedColor": "#4fc3f7",
+    "backgroundColor": "#161b22",
+    "borderStyle": "black",
+    "list": [
+      {
+        "pagePath": "pages/dashboard/dashboard",
+        "text": "总览"
+      },
+      {
+        "pagePath": "pages/scan/scan",
+        "text": "选股"
+      },
+      {
+        "pagePath": "pages/portfolio/portfolio",
+        "text": "AI仓"
+      },
+      {
+        "pagePath": "pages/openclaw/openclaw",
+        "text": "OpenClaw"
+      },
+      {
+        "pagePath": "pages/messages/messages",
+        "text": "消息"
+      }
+    ]
+  },
+  "style": "v2",
+  "sitemapLocation": "sitemap.json"
+}

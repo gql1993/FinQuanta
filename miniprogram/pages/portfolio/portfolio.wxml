@@ -1,0 +1,41 @@
+<view class="page">
+  <view class="title">🤖 AI仓</view>
+  <button class="btn-primary" bindtap="loadData" loading="{{loading}}">刷新仓位</button>
+  <view class="red" wx:if="{{error}}">{{error}}</view>
+
+  <view class="card" wx:if="{{summary}}">
+    <view class="list-title">AI 四仓摘要</view>
+    <view class="list-item">🟣 完全自主：¥{{summary.ai.full_auto.equity}} / {{summary.ai.full_auto.return_pct}}%</view>
+    <view class="list-item">🔵 AI推荐：¥{{summary.ai.auto.equity}} / {{summary.ai.auto.return_pct}}%</view>
+    <view class="list-item">📌 自定义：¥{{summary.ai.custom.equity}} / {{summary.ai.custom.return_pct}}%</view>
+    <view class="list-item">⚛️ 量子仓：¥{{summary.ai.quantum.equity}} / {{summary.ai.quantum.return_pct}}%</view>
+  </view>
+
+  <view class="card" wx:if="{{recommendations.length}}">
+    <view class="list-title">AI 推荐审批列表</view>
+    <view class="list-desc">{{analysis}}</view>
+    <view class="list-item" wx:for="{{recommendations}}" wx:key="code">
+      <view class="list-title">{{item.action}} {{item.code}} {{item.name}}</view>
+      <view class="list-desc">价格 {{item.price}} ｜ 股数 {{item.shares}} ｜ {{item.reason}}</view>
+      <button class="btn-primary" data-index="{{index}}" bindtap="useRecommendation">填入审批表单</button>
+    </view>
+  </view>
+
+  <view class="card" wx:if="{{positions}}">
+    <view class="list-title">手动仓持仓</view>
+    <view class="list-item" wx:for="{{positions.manual_positions}}" wx:key="code">
+      {{item.code}} {{item.name}} {{item.shares}}股 @ {{item.entry_price}}
+    </view>
+  </view>
+
+  <view class="card">
+    <view class="list-title">审批执行（第一版）</view>
+    <input class="card" placeholder="模式，如 auto" data-field="mode" bindinput="onApproveField" value="{{approve.mode}}" />
+    <input class="card" placeholder="动作 BUY / SELL" data-field="action" bindinput="onApproveField" value="{{approve.action}}" />
+    <input class="card" placeholder="代码" data-field="code" bindinput="onApproveField" value="{{approve.code}}" />
+    <input class="card" placeholder="名称（买入时可填）" data-field="name" bindinput="onApproveField" value="{{approve.name}}" />
+    <input class="card" placeholder="价格" data-field="price" bindinput="onApproveField" value="{{approve.price}}" />
+    <input class="card" placeholder="股数" data-field="shares" bindinput="onApproveField" value="{{approve.shares}}" />
+    <button class="btn-primary" bindtap="submitApproval" loading="{{loading}}">提交审批执行</button>
+  </view>
+</view>

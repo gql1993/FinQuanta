@@ -1,0 +1,44 @@
+<view class="page">
+  <view class="title">🦀 OpenClaw</view>
+  <view class="row">
+    <button class="btn-primary" bindtap="runPipeline" loading="{{loading}}">启动全流程</button>
+    <button class="btn-primary" bindtap="runLearn" loading="{{loading}}">立即学习</button>
+  </view>
+  <view class="row" style="margin-top: 16rpx;">
+    <button class="btn-primary" data-task="scan" bindtap="triggerTask" loading="{{loading}}">触发扫描</button>
+    <button class="btn-primary" data-task="risk" bindtap="triggerTask" loading="{{loading}}">触发风控</button>
+  </view>
+  <view class="row" style="margin-top: 16rpx;">
+    <button class="btn-primary" data-task="watchlist" bindtap="triggerTask" loading="{{loading}}">关注股扫描</button>
+    <button class="btn-primary" data-task="backtest" bindtap="triggerTask" loading="{{loading}}">触发回测</button>
+  </view>
+  <view class="red" wx:if="{{error}}">{{error}}</view>
+
+  <view class="card" wx:if="{{ops}}">
+    <view class="list-title">系统快照</view>
+    <view class="list-desc">总资产：¥{{ops.snapshot.totals.equity}}</view>
+    <view class="list-desc">市场状态：{{ops.snapshot.market_state.state}}</view>
+    <view class="list-desc">风险：VaR95 ¥{{ops.snapshot.risk.var95}}</view>
+  </view>
+
+  <view class="card">
+    <view class="list-title">策略权重</view>
+    <view class="list-item" wx:for="{{weights}}" wx:key="0">
+      {{item[0]}}：{{item[1].weight}} / 准确率{{item[1].accuracy}}%
+    </view>
+  </view>
+
+  <view class="card" wx:if="{{ops && ops.tasks}}">
+    <view class="list-title">最近任务运行</view>
+    <view class="list-item" wx:for="{{ops.tasks}}" wx:key="timestamp">
+      {{item.timestamp}} ｜ {{item.task_name}} ｜ {{item.status}}
+    </view>
+  </view>
+
+  <view class="card" wx:if="{{ops && ops.events}}">
+    <view class="list-title">最近系统事件</view>
+    <view class="list-item" wx:for="{{ops.events}}" wx:key="timestamp">
+      {{item.timestamp}} ｜ {{item.title}}
+    </view>
+  </view>
+</view>
