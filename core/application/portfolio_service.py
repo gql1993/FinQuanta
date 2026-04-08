@@ -8,6 +8,9 @@ clients can stop rebuilding portfolio response shapes in multiple places.
 from __future__ import annotations
 
 from core.application.snapshot_service import get_system_snapshot
+from core.repositories.portfolio_repo import PortfolioRepository
+
+portfolio_repo = PortfolioRepository()
 
 
 def get_portfolio_summary(refresh: bool = False) -> dict:
@@ -26,4 +29,15 @@ def get_portfolio_positions(refresh: bool = False) -> dict:
             "positions", []
         ),
         "ai_states": snapshot.get("ai_states", {}),
+    }
+
+
+def get_portfolio_recommendations(limit: int = 20) -> dict:
+    latest = portfolio_repo.get_latest_auto_decision_memory()
+    if not latest:
+        return {"timestamp": "", "analysis": "", "items": []}
+    return {
+        "timestamp": latest.get("timestamp", ""),
+        "analysis": latest.get("analysis", ""),
+        "items": (latest.get("items") or [])[:limit],
     }

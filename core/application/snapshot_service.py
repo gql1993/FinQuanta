@@ -11,14 +11,10 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from desktop.platform_store import get_kv_json, set_kv_json
+from core.repositories.snapshot_repo import SnapshotRepository
 
 
-DEFAULT_MANUAL_PORTFOLIO = {
-    "positions": [],
-    "cash": 1_000_000,
-    "initial_capital": 1_000_000,
-}
+snapshot_repo = SnapshotRepository()
 
 
 def _safe_ai_state(mode: str) -> dict:
@@ -43,7 +39,7 @@ def build_system_snapshot() -> dict:
         get_recent_task_runs,
     )
 
-    manual_pf = get_kv_json("manual_portfolio", DEFAULT_MANUAL_PORTFOLIO)
+    manual_pf = snapshot_repo.get_manual_portfolio()
     manual_cost = sum(
         (position.get("entry_price", 0) or 0)
         * (position.get("shares", 0) or 0)
@@ -58,7 +54,7 @@ def build_system_snapshot() -> dict:
         mode: _safe_ai_state(mode)
         for mode in ["full_auto", "auto", "manual", "custom", "quantum"]
     }
-    risk = get_kv_json("portfolio_risk", {})
+    risk = snapshot_repo.get_portfolio_risk()
     market = get_market_state_snapshot()
 
     tracked_modes = ["full_auto", "auto", "custom", "quantum"]
@@ -107,13 +103,12 @@ def build_system_snapshot() -> dict:
 
 def save_system_snapshot() -> dict:
     snapshot = build_system_snapshot()
-    set_kv_json("system_snapshot", snapshot)
+    snapshot_repo.save_snapshot(snapshot)
     return snapshot
 
 
 def get_system_snapshot_cached() -> dict | None:
-    snapshot = get_kv_json("system_snapshot", None)
-    return snapshot if isinstance(snapshot, dict) else None
+    return snapshot_repo.get_cached_snapshot()
 
 
 def get_system_snapshot(refresh: bool = False) -> dict:

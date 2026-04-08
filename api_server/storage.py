@@ -20,9 +20,10 @@ from contextlib import contextmanager
 from typing import Any, Iterator
 
 from api_server.config import settings
+from core.repositories.base import BaseRepository
 
 
-class SQLiteRepository:
+class SQLiteRepository(BaseRepository):
     def __init__(self, db_path: str | None = None):
         self.db_path = db_path or settings.sqlite_path
 
@@ -83,7 +84,7 @@ class SQLiteRepository:
             return {"ok": False, "backend": "sqlite", "detail": str(exc)}
 
 
-class PostgresRepository:
+class PostgresRepository(BaseRepository):
     """真实 PostgreSQL 仓储实现。"""
 
     def __init__(self, dsn: str | None = None):
@@ -195,7 +196,7 @@ class CacheProvider:
         return {"ok": not self.enabled(), "backend": "redis", "detail": "disabled" if not self.enabled() else "not_implemented"}
 
 
-def get_repository():
+def get_repository() -> BaseRepository:
     if settings.db_backend == "postgres":
         return PostgresRepository()
     return SQLiteRepository()

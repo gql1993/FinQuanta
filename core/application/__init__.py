@@ -13,6 +13,7 @@ from core.application.snapshot_service import (
 )
 from core.application.portfolio_service import (
     get_portfolio_positions,
+    get_portfolio_recommendations,
     get_portfolio_summary,
 )
 from core.application.assistant_service import (
@@ -48,6 +49,7 @@ __all__ = [
     "get_system_snapshot_cached",
     "save_system_snapshot",
     "get_portfolio_positions",
+    "get_portfolio_recommendations",
     "get_portfolio_summary",
     "ask_assistant",
     "build_assistant_context_payload",

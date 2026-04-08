@@ -61,6 +61,7 @@ from core.application.ops_service import (
 )
 from core.application.portfolio_service import (
     get_portfolio_positions,
+    get_portfolio_recommendations,
     get_portfolio_summary,
 )
 from core.application.snapshot_service import get_system_snapshot
@@ -118,6 +119,7 @@ def health():
         "ok": True,
         "service": "finquanta-api",
         "env": settings.app_env,
+        "runtime_mode": settings.runtime_mode,
         "db_backend": settings.db_backend,
         "redis_cache": snapshot_cache.enabled,
     }
@@ -235,20 +237,7 @@ def api_portfolio_positions(authorization: str | None = Header(default=None)):
 @app.get("/api/portfolio/recommendations", response_model=ApiResponse)
 def api_portfolio_recommendations(authorization: str | None = Header(default=None), limit: int = 20):
     require_user(authorization)
-    row = repo.fetchone(
-        "SELECT timestamp, decisions, analysis FROM ai_decision_memory "
-        "WHERE mode='auto' ORDER BY id DESC LIMIT 1"
-    )
-    if not row:
-        return ApiResponse(data={"timestamp": "", "analysis": "", "items": []})
-    decisions = _decode_json_field(row[1], [])
-    return ApiResponse(
-        data={
-            "timestamp": row[0],
-            "analysis": row[2] or "",
-            "items": decisions[:limit],
-        }
-    )
+    return ApiResponse(data=get_portfolio_recommendations(limit=limit))
 
 
 @app.get("/api/messages", response_model=ApiResponse)

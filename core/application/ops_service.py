@@ -8,20 +8,17 @@ does not depend directly on desktop orchestration modules.
 from __future__ import annotations
 
 from core.application.snapshot_service import get_system_snapshot
+from core.repositories.task_repo import TaskRepository
+
+task_repo = TaskRepository()
 
 
 def get_recent_task_runs(limit: int = 50) -> list[dict]:
-    from desktop.task_orchestrator import get_recent_task_runs as _get_recent_task_runs
-
-    return _get_recent_task_runs(limit)
+    return task_repo.get_recent_task_runs(limit)
 
 
 def get_recent_system_events(limit: int = 50) -> list[dict]:
-    from desktop.task_orchestrator import (
-        get_recent_system_events as _get_recent_system_events,
-    )
-
-    return _get_recent_system_events(limit)
+    return task_repo.get_recent_system_events(limit)
 
 
 def log_system_event(
@@ -31,9 +28,13 @@ def log_system_event(
     detail: str = "",
     level: str = "info",
 ) -> None:
-    from desktop.task_orchestrator import log_system_event as _log_system_event
-
-    _log_system_event(source, category, title, detail=detail, level=level)
+    task_repo.log_system_event(
+        source,
+        category,
+        title,
+        detail=detail,
+        level=level,
+    )
 
 
 def run_task(task_name: str, trigger_source: str, func, *args, **kwargs):
@@ -43,9 +44,7 @@ def run_task(task_name: str, trigger_source: str, func, *args, **kwargs):
 
 
 def get_operation_log(limit: int = 50) -> list[dict]:
-    from desktop.portfolio_tracker import get_operation_log as _get_operation_log
-
-    return _get_operation_log(limit)
+    return task_repo.get_operation_log(limit)
 
 
 def get_ops_center_payload(limit: int = 20, refresh_snapshot: bool = False) -> dict:

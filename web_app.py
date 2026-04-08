@@ -19,8 +19,15 @@ from datetime import datetime, date, timedelta
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from api_server.config import settings as api_settings
+from core.runtime.mode import resolve_runtime_mode_context
 
 from desktop.data_access import RepoCompatConnection
+
+RUNTIME_CONTEXT = resolve_runtime_mode_context(
+    runtime_mode=api_settings.runtime_mode,
+    db_backend=api_settings.db_backend,
+    api_base=api_settings.api_base,
+)
 
 st.set_page_config(
     page_title="FinQuanta — AI 量化交易平台",
@@ -58,6 +65,10 @@ with st.sidebar:
     st.markdown("### 🔐 API 登录")
     st.session_state.setdefault("api_base", api_settings.api_base)
     st.session_state.setdefault("api_token", "")
+    st.caption(
+        f"运行模式: {'平台模式' if RUNTIME_CONTEXT.is_platform_mode else '本地模式'} | "
+        f"后端: {RUNTIME_CONTEXT.db_backend}"
+    )
     api_base = st.text_input("API 地址", value=st.session_state["api_base"])
     st.session_state["api_base"] = api_base
     user = st.text_input("用户名", value="admin")
