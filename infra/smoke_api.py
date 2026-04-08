@@ -56,6 +56,7 @@ def main():
     ok = True
 
     ok &= check("health", lambda: api_call("GET", "/health").get("service"))
+    ok &= check("health_runtime_mode", lambda: api_call("GET", "/health").get("runtime_mode"))
     ok &= check("health_deps", lambda: api_call("GET", "/health/deps").get("dependencies", {}).get("database", {}))
 
     login_resp = {}
@@ -73,14 +74,48 @@ def main():
         return 1
 
     ok &= check("auth_profile", lambda: api_call("GET", "/api/auth/profile", token=token).get("data", {}).get("username"))
-    ok &= check("snapshot_system", lambda: api_call("GET", "/api/snapshot/system", token=token).get("data", {}).get("totals", {}))
+    ok &= check(
+        "snapshot_system",
+        lambda: (
+            api_call("GET", "/api/snapshot/system", token=token)
+            .get("data", {})
+            .get("totals", {})
+        ),
+    )
     ok &= check("scan_latest", lambda: api_call("GET", "/api/scan/latest", token=token).get("data", {}).get("count", 0))
     ok &= check("portfolio_summary", lambda: api_call("GET", "/api/portfolio/summary", token=token).get("data", {}).keys())
+    ok &= check("portfolio_positions", lambda: api_call("GET", "/api/portfolio/positions", token=token).get("data", {}).keys())
+    ok &= check(
+        "portfolio_recommendations",
+        lambda: api_call("GET", "/api/portfolio/recommendations", token=token).get("data", {}).keys(),
+    )
+    ok &= check("ops_tasks", lambda: len(api_call("GET", "/api/ops/tasks", token=token).get("data", [])))
+    ok &= check("ops_events", lambda: len(api_call("GET", "/api/ops/events", token=token).get("data", [])))
     ok &= check("ops_center", lambda: api_call("GET", "/api/ops/center", token=token).get("data", {}).keys())
+    ok &= check("messages", lambda: len(api_call("GET", "/api/messages", token=token).get("data", [])))
+    ok &= check("openclaw_weights", lambda: api_call("GET", "/api/openclaw/weights", token=token).get("data", {}).keys())
     ok &= check("openclaw_sources", lambda: len(api_call("GET", "/api/openclaw/sources", token=token).get("data", [])))
     ok &= check("verify_summary", lambda: api_call("GET", "/api/verify/summary", token=token).get("data", {}).get("total", 0))
     ok &= check("settings_ai", lambda: api_call("GET", "/api/settings/ai", token=token).get("data", {}).keys())
-    ok &= check("assistant_context", lambda: api_call("GET", "/api/assistant/context", token=token).get("data", {}).keys())
+    ok &= check(
+        "assistant_context",
+        lambda: sorted(
+            key
+            for key in api_call("GET", "/api/assistant/context", token=token)
+            .get("data", {})
+            .keys()
+            if key
+            in {
+                "snapshot_context",
+                "market_context",
+                "scan_context",
+                "verify_context",
+                "strategy_weights_context",
+                "ops_context",
+                "context_text",
+            }
+        ),
+    )
     ok &= check(
         "assistant_ask",
         lambda: api_call(

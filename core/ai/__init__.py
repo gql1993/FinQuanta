@@ -1,51 +1,58 @@
 """
 Shared AI runtime helpers.
+
+Exports are resolved lazily to avoid circular imports between AI/application
+packages while keeping a convenient package-level API.
 """
 
-from core.ai.context_builder import (
-    build_ai_portfolio_context_text,
-    build_assistant_context_payload,
-    build_candidates_context,
-    build_candidates_context_text,
-    build_decision_history_context,
-    build_decision_history_context_text,
-    build_learning_feedback_context,
-    build_learning_feedback_context_text,
-    build_market_context,
-    build_market_context_text,
-    build_openclaw_context,
-    build_openclaw_context_text,
-    build_ops_context,
-    build_portfolio_context,
-    build_rotation_context,
-    build_rotation_context_text,
-    build_scan_context,
-    build_snapshot_context,
-    build_strategy_weights_context,
-    build_verify_context,
-)
-from core.ai.decision_models import (
-    DecisionEngineResult,
-    TradingDecision,
-    build_decision_result,
-    build_error_result,
-    normalize_decision_payload,
-)
-from core.ai.decision_memory import (
-    calibrate_decisions,
-    ensure_decision_memory_table,
-    get_decision_accuracy,
-    save_decision_memory,
-)
-from core.ai.decision_engine import (
-    build_ai_decision_prompt,
-    parse_ai_decision_response,
-    run_ai_decision,
-)
-from core.ai.prompt_registry import (
-    build_assistant_system_prompt,
-    get_ai_decision_system_prompt,
-)
+from __future__ import annotations
+
+from importlib import import_module
+
+_EXPORTS = {
+    "build_snapshot_context": "core.ai.context_builder",
+    "build_market_context": "core.ai.context_builder",
+    "build_portfolio_context": "core.ai.context_builder",
+    "build_candidates_context": "core.ai.context_builder",
+    "build_decision_history_context": "core.ai.context_builder",
+    "build_rotation_context": "core.ai.context_builder",
+    "build_learning_feedback_context": "core.ai.context_builder",
+    "build_scan_context": "core.ai.context_builder",
+    "build_ops_context": "core.ai.context_builder",
+    "build_verify_context": "core.ai.context_builder",
+    "build_strategy_weights_context": "core.ai.context_builder",
+    "build_openclaw_context": "core.ai.context_builder",
+    "build_ai_portfolio_context_text": "core.ai.context_builder",
+    "build_candidates_context_text": "core.ai.context_builder",
+    "build_assistant_context_payload": "core.ai.context_builder",
+    "build_decision_history_context_text": "core.ai.context_builder",
+    "build_rotation_context_text": "core.ai.context_builder",
+    "build_learning_feedback_context_text": "core.ai.context_builder",
+    "build_market_context_text": "core.ai.context_builder",
+    "build_openclaw_context_text": "core.ai.context_builder",
+    "TradingDecision": "core.ai.decision_models",
+    "DecisionEngineResult": "core.ai.decision_models",
+    "normalize_decision_payload": "core.ai.decision_models",
+    "build_decision_result": "core.ai.decision_models",
+    "build_error_result": "core.ai.decision_models",
+    "ensure_decision_memory_table": "core.ai.decision_memory",
+    "save_decision_memory": "core.ai.decision_memory",
+    "calibrate_decisions": "core.ai.decision_memory",
+    "get_decision_accuracy": "core.ai.decision_memory",
+    "build_ai_decision_prompt": "core.ai.decision_engine",
+    "parse_ai_decision_response": "core.ai.decision_engine",
+    "run_ai_decision": "core.ai.decision_engine",
+    "get_ai_decision_system_prompt": "core.ai.prompt_registry",
+    "build_assistant_system_prompt": "core.ai.prompt_registry",
+}
+
+
+def __getattr__(name: str):
+    module_name = _EXPORTS.get(name)
+    if not module_name:
+        raise AttributeError(name)
+    module = import_module(module_name)
+    return getattr(module, name)
 
 __all__ = [
     "build_snapshot_context",

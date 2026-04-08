@@ -4,6 +4,7 @@ Application-level trade approval execution service.
 
 from __future__ import annotations
 
+from core.config.feature_flags import is_feature_enabled
 from core.application.ops_service import log_system_event
 from core.risk.approval_service import evaluate_trade_request
 
@@ -17,6 +18,12 @@ def approve_trade(
     shares: int,
     reason: str = "",
 ) -> dict:
+    if not is_feature_enabled("trade_approval"):
+        return {
+            "approved": False,
+            "disabled": True,
+            "message": "trade_approval feature is disabled",
+        }
     evaluation = evaluate_trade_request(
         mode=mode,
         action=action,
