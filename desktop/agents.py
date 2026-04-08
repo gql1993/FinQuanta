@@ -14,6 +14,12 @@ import numpy as np
 import logging
 from datetime import datetime, date
 
+from core.ai.decision_memory import (
+    calibrate_decisions as calibrate_decisions_core,
+    ensure_decision_memory_table,
+    get_decision_accuracy as get_decision_accuracy_core,
+    save_decision_memory as save_decision_memory_core,
+)
 from desktop.data_access import RepoCompatConnection
 
 _log = logging.getLogger("agents")
@@ -348,23 +354,7 @@ def _detect_regime(intel: dict) -> str:
 
 
 def _init_memory_table():
-    conn = RepoCompatConnection()
-    conn.execute("""
-    CREATE TABLE IF NOT EXISTS ai_decision_memory (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        timestamp TEXT,
-        mode TEXT,
-        decisions TEXT,
-        analysis TEXT,
-        intel_summary TEXT,
-        candidates_count INTEGER,
-        market_regime TEXT,
-        actual_results TEXT,
-        calibrated INTEGER DEFAULT 0
-    )
-    """)
-    conn.commit()
-    conn.close()
+    ensure_decision_memory_table()
 
 
 _init_memory_table()
@@ -372,29 +362,7 @@ _init_memory_table()
 
 def _save_decision_memory(result: dict):
     """保存完整决策上下文到数据库，供后续校准。"""
-    import json as _json
-    try:
-        conn = RepoCompatConnection()
-        intel_step = next((s for s in result.get("steps", []) if "情报" in s.get("agent", "")), {})
-        analysis_step = next((s for s in result.get("steps", []) if "分析" in s.get("agent", "")), {})
-        conn.execute(
-            "INSERT INTO ai_decision_memory "
-            "(timestamp,mode,decisions,analysis,intel_summary,candidates_count,market_regime) "
-            "VALUES (?,?,?,?,?,?,?)",
-            (
-                result.get("timestamp", datetime.now().isoformat()),
-                result.get("mode", ""),
-                _json.dumps(result.get("decisions", []), ensure_ascii=False),
-                result.get("analysis", ""),
-                intel_step.get("summary", ""),
-                int(analysis_step.get("summary", "0").split(" ")[1]) if "评分" in analysis_step.get("summary", "") else 0,
-                analysis_step.get("summary", "").split("环境:")[1].strip() if "环境:" in analysis_step.get("summary", "") else "",
-            ),
-        )
-        conn.commit()
-        conn.close()
-    except Exception:
-        pass
+    save_decision_memory_core(result)
 
 
 def calibrate_decisions(days_after: int = 5) -> list[dict]:
@@ -402,91 +370,12 @@ def calibrate_decisions(days_after: int = 5) -> list[dict]:
     校准历史决策：检查 N 天前的买入决策，实际收益是多少。
     更新 actual_results 和 calibrated 字段。
     """
-    import json as _json
-    from datetime import timedelta
-    conn = RepoCompatConnection()
-    cutoff = (date.today() - timedelta(days=days_after)).isoformat()
-    cur = conn.execute(
-        "SELECT id, timestamp, decisions FROM ai_decision_memory "
-        "WHERE calibrated=0 AND timestamp<? ORDER BY id", (cutoff,)
-    )
-    rows = cur.fetchall()
-    calibrations = []
-
-    for row_id, ts, dec_json in rows:
-        try:
-            decisions = _json.loads(dec_json)
-        except Exception:
-            continue
-
-        actual = []
-        for d in decisions:
-            if d.get("action") != "buy":
-                continue
-            code = d.get("code", "")
-            buy_price = float(d.get("price", 0))
-            if not code or buy_price <= 0:
-                continue
-
-            cur2 = conn.execute(
-                "SELECT close FROM daily_kline WHERE code=? ORDER BY date DESC LIMIT 1",
-                (code,),
-            )
-            r = cur2.fetchone()
-            if r:
-                current = r[0]
-                pnl = (current / buy_price - 1) * 100
-                actual.append({
-                    "code": code, "buy_price": buy_price,
-                    "current": round(current, 2), "pnl_pct": round(pnl, 2),
-                    "correct": pnl > 0,
-                })
-
-        conn.execute(
-            "UPDATE ai_decision_memory SET actual_results=?, calibrated=1 WHERE id=?",
-            (_json.dumps(actual, ensure_ascii=False), row_id),
-        )
-        if actual:
-            calibrations.append({"id": row_id, "date": ts[:10], "results": actual})
-
-    conn.commit()
-    conn.close()
-    return calibrations
+    return calibrate_decisions_core(days_after=days_after)
 
 
 def get_decision_accuracy(limit: int = 50) -> dict:
     """统计 AI 决策的历史准确率。"""
-    import json as _json
-    conn = RepoCompatConnection()
-    cur = conn.execute(
-        "SELECT actual_results FROM ai_decision_memory WHERE calibrated=1 ORDER BY id DESC LIMIT ?",
-        (limit,),
-    )
-    total, correct, total_pnl = 0, 0, 0
-    for (res_json,) in cur.fetchall():
-        try:
-            results = _json.loads(res_json)
-            for r in results:
-                total += 1
-                if r.get("correct"):
-                    correct += 1
-                pnl = r.get("pnl_pct", 0)
-                if pnl is None:
-                    pnl = 0
-                try:
-                    total_pnl += float(pnl)
-                except (TypeError, ValueError):
-                    pass
-        except Exception:
-            continue
-    conn.close()
-
-    return {
-        "total_decisions": total,
-        "correct": correct,
-        "accuracy": round(correct / total * 100, 1) if total > 0 else 0,
-        "avg_pnl": round(total_pnl / total, 2) if total > 0 else 0,
-    }
+    return get_decision_accuracy_core(limit=limit)
 
 
 def run_multi_agent_cycle(boards: list[str] = None, mode: str = "full_auto",

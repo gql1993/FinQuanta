@@ -18,6 +18,10 @@ from core.ai.context_builder import (
     build_market_context_text,
     build_rotation_context_text,
 )
+from core.ai.decision_models import (
+    build_decision_result,
+    build_error_result,
+)
 from core.ai.prompt_registry import get_ai_decision_system_prompt
 
 
@@ -53,16 +57,32 @@ def build_ai_decision_prompt(
 
 def parse_ai_decision_response(response: str) -> dict:
     if response.startswith("ERROR:"):
-        return {"error": response, "decisions": [], "analysis": response}
+        return build_error_result(response)
 
     try:
         start = response.find("{")
         end = response.rfind("}") + 1
         if start >= 0 and end > start:
-            return json.loads(response[start:end])
-        return {"analysis": response, "decisions": []}
+            payload = json.loads(response[start:end])
+            return build_decision_result(
+                analysis=str(payload.get("analysis", "") or response),
+                decisions=payload.get("decisions", []),
+                raw_response=response,
+                parse_status="json",
+            )
+        return build_decision_result(
+            analysis=response,
+            decisions=[],
+            raw_response=response,
+            parse_status="plain_text",
+        )
     except json.JSONDecodeError:
-        return {"analysis": response, "decisions": []}
+        return build_decision_result(
+            analysis=response,
+            decisions=[],
+            raw_response=response,
+            parse_status="invalid_json",
+        )
 
 
 def run_ai_decision(

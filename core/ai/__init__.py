@@ -24,6 +24,19 @@ from core.ai.context_builder import (
     build_strategy_weights_context,
     build_verify_context,
 )
+from core.ai.decision_models import (
+    DecisionEngineResult,
+    TradingDecision,
+    build_decision_result,
+    build_error_result,
+    normalize_decision_payload,
+)
+from core.ai.decision_memory import (
+    calibrate_decisions,
+    ensure_decision_memory_table,
+    get_decision_accuracy,
+    save_decision_memory,
+)
 from core.ai.decision_engine import (
     build_ai_decision_prompt,
     parse_ai_decision_response,
@@ -58,6 +71,15 @@ __all__ = [
     "build_ai_decision_prompt",
     "parse_ai_decision_response",
     "run_ai_decision",
+    "TradingDecision",
+    "DecisionEngineResult",
+    "normalize_decision_payload",
+    "build_decision_result",
+    "build_error_result",
+    "ensure_decision_memory_table",
+    "save_decision_memory",
+    "calibrate_decisions",
+    "get_decision_accuracy",
     "get_ai_decision_system_prompt",
     "build_assistant_system_prompt",
 ]
