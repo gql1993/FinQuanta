@@ -111,6 +111,7 @@ def _write_manifest(target: Path, files: list[Path], package_name: str) -> None:
         "accept_windows_release.bat --check-deps",
         "start_api.bat",
         "install_api_task.bat --start",
+        "install_openclaw_task.bat --start",
         "accept_windows_release.bat --smoke-openclaw",
         "accept_windows_release.bat --smoke-openclaw --check-trade-safety --require-buy-disabled",
         "smoke_openclaw_daemon.bat --require-task --require-daemon-active --require-last-run --require-ready --require-security-ready",

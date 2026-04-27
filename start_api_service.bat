@@ -18,7 +18,7 @@ echo ========================================
 python -c "import os,sys,urllib.request; base=os.environ.get('FINQUANTA_API_BASE','http://127.0.0.1:9000').rstrip('/'); req=urllib.request.Request(base + '/health', method='GET'); opener=urllib.request.build_opener(urllib.request.ProxyHandler({})); resp=opener.open(req, timeout=5); sys.exit(0 if resp.status < 500 else 1)" >nul 2>nul
 if not errorlevel 1 (
   echo [%date% %time%] API already healthy at %FINQUANTA_API_BASE%; watching >> "%FINQUANTA_API_SERVICE_LOG%"
-  timeout /t %FINQUANTA_API_RESTART_DELAY_SECONDS% /nobreak >nul
+  python -c "import os,time; time.sleep(max(1, int(os.environ.get('FINQUANTA_API_RESTART_DELAY_SECONDS','15'))))" >nul 2>nul
   goto loop
 )
 
@@ -30,5 +30,5 @@ echo [%date% %time%] FinQuanta API exited with code %EXIT_CODE% >> "%FINQUANTA_A
 if "%FINQUANTA_API_KEEPALIVE%"=="0" exit /b %EXIT_CODE%
 
 echo Restarting in %FINQUANTA_API_RESTART_DELAY_SECONDS% seconds...
-timeout /t %FINQUANTA_API_RESTART_DELAY_SECONDS% /nobreak >nul
+python -c "import os,time; time.sleep(max(1, int(os.environ.get('FINQUANTA_API_RESTART_DELAY_SECONDS','15'))))" >nul 2>nul
 goto loop
