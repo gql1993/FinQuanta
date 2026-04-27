@@ -55,6 +55,8 @@ def _query_task(task_name: str) -> dict:
         ["schtasks", "/Query", "/TN", task_name, "/FO", "LIST"],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         shell=False,
     )
     return {
@@ -98,50 +100,56 @@ def main() -> int:
     if not token:
         return 1
 
-    def read_status():
-        data = _api_call("GET", "/api/openclaw/daemon/status", token=token).get("data", {})
-        daemon = data.get("daemon", {})
-        openclaw = data.get("openclaw", {})
-        guard = data.get("trade_guard", {})
-        readiness = openclaw.get("readiness", {}) or {}
-        if args.require_daemon_active and not daemon.get("active"):
-            raise RuntimeError("daemon is not active")
-        if args.require_last_run and not openclaw.get("last_run"):
-            raise RuntimeError("openclaw last_run is empty")
-        if args.require_ready and readiness.get("status") != "ready":
-            raise RuntimeError(
-                "readiness is not ready: "
-                f"{readiness.get('status', '-')}; {readiness.get('summary', '')}"
-            )
-        return {
-            "daemon_active": daemon.get("active"),
-            "readiness": readiness,
-            "next_task": daemon.get("next_task", {}),
-            "openclaw_config": openclaw.get("config", {}),
-            "last_run_status": (openclaw.get("last_run", {}) or {}).get("status", "-"),
-            "history_count": len(openclaw.get("history", []) or []),
-            "guard_buy_enabled": (guard.get("config", {}) or {}).get("unattended_buy_enabled", False),
-            "simulation": guard.get("simulation", {}),
-        }
+    try:
+        def read_status():
+            data = _api_call("GET", "/api/openclaw/daemon/status", token=token).get("data", {})
+            daemon = data.get("daemon", {})
+            openclaw = data.get("openclaw", {})
+            guard = data.get("trade_guard", {})
+            readiness = openclaw.get("readiness", {}) or {}
+            if args.require_daemon_active and not daemon.get("active"):
+                raise RuntimeError("daemon is not active")
+            if args.require_last_run and not openclaw.get("last_run"):
+                raise RuntimeError("openclaw last_run is empty")
+            if args.require_ready and readiness.get("status") != "ready":
+                raise RuntimeError(
+                    "readiness is not ready: "
+                    f"{readiness.get('status', '-')}; {readiness.get('summary', '')}"
+                )
+            return {
+                "daemon_active": daemon.get("active"),
+                "readiness": readiness,
+                "next_task": daemon.get("next_task", {}),
+                "openclaw_config": openclaw.get("config", {}),
+                "last_run_status": (openclaw.get("last_run", {}) or {}).get("status", "-"),
+                "history_count": len(openclaw.get("history", []) or []),
+                "guard_buy_enabled": (guard.get("config", {}) or {}).get("unattended_buy_enabled", False),
+                "simulation": guard.get("simulation", {}),
+            }
 
-    ok &= _check("openclaw_daemon_status", read_status)[0]
+        ok &= _check("openclaw_daemon_status", read_status)[0]
 
-    def read_security_status():
-        data = _api_call("GET", "/api/admin/security-check", token=token).get("data", {})
-        if args.require_security_ready and data.get("status") != "ready":
-            findings = data.get("findings", []) or []
-            detail = "; ".join(str(item.get("message", "")) for item in findings[:3] if isinstance(item, dict))
-            raise RuntimeError(f"security status is not ready: {data.get('status', '-')}; {detail}")
-        return {
-            "status": data.get("status", "-"),
-            "default_admin_password": data.get("default_admin_password", None),
-            "role_counts": data.get("role_counts", {}),
-            "tokens": data.get("tokens", {}),
-            "finding_count": len(data.get("findings", []) or []),
-        }
+        def read_security_status():
+            data = _api_call("GET", "/api/admin/security-check", token=token).get("data", {})
+            if args.require_security_ready and data.get("status") != "ready":
+                findings = data.get("findings", []) or []
+                detail = "; ".join(str(item.get("message", "")) for item in findings[:3] if isinstance(item, dict))
+                raise RuntimeError(f"security status is not ready: {data.get('status', '-')}; {detail}")
+            return {
+                "status": data.get("status", "-"),
+                "default_admin_password": data.get("default_admin_password", None),
+                "role_counts": data.get("role_counts", {}),
+                "tokens": data.get("tokens", {}),
+                "finding_count": len(data.get("findings", []) or []),
+            }
 
-    if args.require_security_ready:
-        ok &= _check("admin_security_check", read_security_status)[0]
+        if args.require_security_ready:
+            ok &= _check("admin_security_check", read_security_status)[0]
+    finally:
+        try:
+            _api_call("POST", "/api/auth/logout", token=token)
+        except Exception:
+            pass
 
     print("[RESULT] PASS" if ok else "[RESULT] FAIL")
     return 0 if ok else 1

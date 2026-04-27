@@ -4,6 +4,8 @@ import argparse
 import json
 import os
 import sys
+import urllib.parse
+import urllib.request
 from pathlib import Path
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -13,6 +15,62 @@ if ROOT not in sys.path:
 from api_server.env_loader import load_env_files
 
 load_env_files()
+
+
+def _api_base() -> str:
+    return os.environ.get("FINQUANTA_API_BASE", "http://127.0.0.1:9000").rstrip("/")
+
+
+def _api_call(method: str, path: str, payload: dict | None = None, token: str = "") -> dict:
+    data = json.dumps(payload).encode("utf-8") if payload is not None else None
+    headers = {"Content-Type": "application/json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    req = urllib.request.Request(f"{_api_base()}{path}", method=method.upper(), headers=headers, data=data)
+    parsed = urllib.parse.urlparse(_api_base())
+    host = (parsed.hostname or "").lower()
+    opener = (
+        urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        if host in {"127.0.0.1", "localhost", "0.0.0.0"}
+        else urllib.request.build_opener()
+    )
+    with opener.open(req, timeout=30) as resp:
+        body = resp.read().decode("utf-8", errors="ignore")
+        return json.loads(body) if body else {}
+
+
+def _login() -> str:
+    user = os.environ.get("FINQUANTA_SMOKE_USER", "admin")
+    password = os.environ.get("FINQUANTA_SMOKE_PASSWORD", "admin123")
+    resp = _api_call("POST", "/api/auth/login", {"username": user, "password": password})
+    if not resp.get("ok") or not resp.get("token"):
+        raise RuntimeError(resp.get("message", "login failed"))
+    return str(resp["token"])
+
+
+def _build_report(payload: dict) -> dict:
+    from core.application.openclaw_service import build_openclaw_historical_replay_report
+
+    try:
+        return build_openclaw_historical_replay_report(payload)
+    except Exception as exc:
+        token = ""
+        try:
+            token = _login()
+            resp = _api_call("POST", "/api/openclaw/replay/history", payload, token=token)
+            if resp.get("ok") and isinstance(resp.get("data"), dict):
+                report = resp["data"]
+                report.setdefault("notes", [])
+                if isinstance(report["notes"], list):
+                    report["notes"].append(f"local replay fell back to API: {exc}")
+                return report
+        finally:
+            if token:
+                try:
+                    _api_call("POST", "/api/auth/logout", token=token)
+                except Exception:
+                    pass
+        raise
 
 
 def main() -> int:
@@ -26,9 +84,7 @@ def main() -> int:
     parser.add_argument("--use-real-price", action="store_true", help="Allow guard replay to fetch real prices.")
     args = parser.parse_args()
 
-    from core.application.openclaw_service import build_openclaw_historical_replay_report
-
-    report = build_openclaw_historical_replay_report(
+    report = _build_report(
         {
             "limit": args.limit,
             "include_guard_replay": not args.skip_guard_replay,
