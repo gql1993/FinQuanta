@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import locale
 import os
 import subprocess
 import sys
@@ -55,7 +56,7 @@ def _query_task(task_name: str) -> dict:
         ["schtasks", "/Query", "/TN", task_name, "/FO", "LIST"],
         capture_output=True,
         text=True,
-        encoding="utf-8",
+        encoding=locale.getpreferredencoding(False),
         errors="replace",
         shell=False,
     )
