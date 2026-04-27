@@ -19,7 +19,9 @@ import os
 import sys
 import time
 import json
+import re
 import logging
+import subprocess
 import threading
 from datetime import datetime, date, timedelta
 
@@ -29,6 +31,25 @@ from desktop.task_orchestrator import log_system_event, run_task
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 _log = logging.getLogger("daemon")
+_DAEMON_LEADER_KEY = "daemon_leader_lock_v1"
+_LEADER_TTL_SECONDS = 180
+_DAEMON_PUSH_STATUS_KEY = "daemon_push_status_v1"
+_DAEMON_DUPLICATE_KEY = "daemon_duplicate_lock_v1"
+_OPENCLAW_ALERT_STATE_KEY = "openclaw_daemon_alert_state"
+_OPENCLAW_ALERT_POLICY_KEY = "openclaw_daemon_alert_policy"
+_OPENCLAW_ALERT_POLICY_DEFAULTS = {
+    "enabled": True,
+    "suppress_seconds": 1800,
+    "escalate_after": 3,
+    "notify_on_success": False,
+    "notify_on_warning": True,
+    "notify_on_error": True,
+    "success_summary_interval_seconds": 86400,
+    "min_level": "warning",
+    "default_channels": ["wechat_personal"],
+    "escalation_channels": ["wechat_personal", "wecom_group_bot"],
+}
+_OPENCLAW_RUN_HISTORY_KEY = "openclaw_daemon_run_history"
 
 # 全策略流水线调度表
 SCHEDULE = [
@@ -46,6 +67,7 @@ SCHEDULE = [
     {"time": "10:15", "key": "ai_decision",   "name": "四仓决策(上午)",    "func": "_task_ai_decision"},
     {"time": "10:18", "key": "auto_sell",    "name": "自动卖出检查(上午)", "func": "_task_auto_sell"},
     {"time": "10:20", "key": "quantum_buy",   "name": "量子仓优化(周一)",  "func": "_task_quantum_buy"},
+    {"time": "10:25", "key": "openclaw_pipeline", "name": "OpenClaw自主全流程", "func": "_task_openclaw_pipeline"},
     # ── 盘中监控（实时行情每小时刷新） ──
     {"time": "10:30", "key": "risk_calc",     "name": "风险计算(10:30)",   "func": "_task_risk_calc"},
     {"time": "11:00", "key": "fetch_data",    "name": "刷新实时行情(11:00)","func": "_task_fetch_data"},
@@ -77,13 +99,122 @@ ALERT_INTERVAL = 300  # 每5分钟检查一次
 
 class DaemonScheduler:
     def __init__(self, boards: list[str] = None, disabled_tasks: set = None):
-        self.boards = boards or ["人工智能", "芯片", "量子科技"]
+        self.boards = boards or _load_openclaw_daemon_boards()
         self.disabled_tasks = disabled_tasks or set()
         self._running = True
         self._last_run = {}
         self._time_overrides = {}
+        self._leader_token = ""
         self._load_last_run()
         self._load_time_overrides()
+
+    @staticmethod
+    def _now_ts() -> float:
+        return time.time()
+
+    @staticmethod
+    def _is_pid_alive(pid: int) -> bool:
+        if pid <= 0:
+            return False
+        if pid == os.getpid():
+            return True
+        if os.name == "nt":
+            try:
+                flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                result = subprocess.run(
+                    ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="ignore",
+                    timeout=3,
+                    creationflags=flags,
+                )
+                return any(f'"{pid}"' in line for line in result.stdout.splitlines())
+            except Exception:
+                return False
+        try:
+            os.kill(pid, 0)
+            return True
+        except Exception:
+            return False
+
+    def _acquire_leader(self) -> bool:
+        now_ts = self._now_ts()
+        current = get_kv_json(_DAEMON_LEADER_KEY, {}) or {}
+        if isinstance(current, str):
+            try:
+                current = json.loads(current)
+            except Exception:
+                current = {}
+        if isinstance(current, dict):
+            hb = float(current.get("heartbeat_ts", 0) or 0)
+            pid = int(current.get("pid", 0) or 0)
+            token = str(current.get("token", "") or "")
+            if token and (now_ts - hb) < _LEADER_TTL_SECONDS and self._is_pid_alive(pid):
+                set_kv_json(
+                    _DAEMON_DUPLICATE_KEY,
+                    {
+                        "detected": True,
+                        "detected_at": datetime.now().isoformat(timespec="seconds"),
+                        "holder_pid": pid,
+                        "holder_heartbeat_at": str(current.get("heartbeat_at", "")),
+                        "candidate_pid": os.getpid(),
+                    },
+                )
+                return False
+
+        self._leader_token = f"{os.getpid()}-{int(now_ts)}"
+        payload = {
+            "token": self._leader_token,
+            "pid": os.getpid(),
+            "started_at": datetime.now().isoformat(timespec="seconds"),
+            "heartbeat_ts": now_ts,
+            "heartbeat_at": datetime.now().isoformat(timespec="seconds"),
+        }
+        set_kv_json(_DAEMON_LEADER_KEY, payload)
+        set_kv_json(
+            _DAEMON_DUPLICATE_KEY,
+            {
+                "detected": False,
+                "detected_at": "",
+                "holder_pid": os.getpid(),
+                "holder_heartbeat_at": payload.get("heartbeat_at", ""),
+                "candidate_pid": 0,
+            },
+        )
+        verify = get_kv_json(_DAEMON_LEADER_KEY, {}) or {}
+        if isinstance(verify, str):
+            try:
+                verify = json.loads(verify)
+            except Exception:
+                verify = {}
+        return isinstance(verify, dict) and str(verify.get("token", "")) == self._leader_token
+
+    def _renew_leader(self):
+        if not self._leader_token:
+            return
+        payload = {
+            "token": self._leader_token,
+            "pid": os.getpid(),
+            "started_at": datetime.now().isoformat(timespec="seconds"),
+            "heartbeat_ts": self._now_ts(),
+            "heartbeat_at": datetime.now().isoformat(timespec="seconds"),
+        }
+        set_kv_json(_DAEMON_LEADER_KEY, payload)
+
+    def _release_leader(self):
+        if not self._leader_token:
+            return
+        current = get_kv_json(_DAEMON_LEADER_KEY, {}) or {}
+        if isinstance(current, str):
+            try:
+                current = json.loads(current)
+            except Exception:
+                current = {}
+        if isinstance(current, dict) and str(current.get("token", "")) == self._leader_token:
+            set_kv_json(_DAEMON_LEADER_KEY, {})
+        self._leader_token = ""
 
     def _load_last_run(self):
         try:
@@ -127,29 +258,313 @@ class DaemonScheduler:
         except Exception:
             return d.weekday() < 5
 
-    def _push(self, title: str, content: str):
+    def _push(self, title: str, content: str, channels: list[str] | None = None):
         """推送到微信（静默失败，限制频率避免耗尽免费额度）。"""
         today_key = date.today().isoformat()
         push_count_key = f"_push_count_{today_key}"
         count = self._last_run.get(push_count_key, 0)
+        channel_map = {
+            "wechat_personal": "serverchan",
+            "serverchan": "serverchan",
+            "wecom_group_bot": "wecom",
+            "wecom": "wecom",
+            "email": "email",
+        }
+        requested_channels = [str(item).strip() for item in channels or [] if str(item).strip()]
+        push_channels = [channel_map[item] for item in requested_channels if item in channel_map]
+        push_channels = list(dict.fromkeys(push_channels))
+        push_status = {
+            "last_title": title,
+            "last_attempt_at": datetime.now().isoformat(timespec="seconds"),
+            "count_today": count,
+            "last_success_at": "",
+            "last_result": "skipped",
+            "last_error": "",
+            "requested_channels": requested_channels,
+            "push_channels": push_channels,
+        }
 
         if count >= 4:
             _log.info(f"push skipped (daily limit {count}/4): {title}")
+            push_status["last_result"] = "skipped_limit"
+            push_status["count_today"] = count
+            set_kv_json(_DAEMON_PUSH_STATUS_KEY, push_status)
             return
 
         try:
             from signal_push import push_signal
-            result = push_signal(title, content)
+            result = {} if requested_channels and not push_channels else push_signal(title, content, channels=push_channels or None)
+            external_ok = any(value is True for value in result.values())
             sc = result.get("serverchan")
-            if sc is True:
+            if external_ok:
                 self._last_run[push_count_key] = count + 1
                 _log.info(f"pushed ({count+1}/4): {title}")
-            elif sc is False:
+                push_status["last_result"] = "success"
+                push_status["count_today"] = count + 1
+                push_status["last_success_at"] = datetime.now().isoformat(timespec="seconds")
+            elif any(value is False for value in result.values()):
                 _log.warning(f"push failed: {title}")
+                push_status["last_result"] = "failed"
+                push_status["last_error"] = "push channel returned false"
             else:
                 _log.info(f"push: no channel configured")
+                push_status["last_result"] = "skipped_no_channel"
+            push_status["raw_result"] = result
+            set_kv_json(_DAEMON_PUSH_STATUS_KEY, push_status)
         except Exception as e:
             _log.warning(f"push skipped: {e}")
+            push_status["last_result"] = "error"
+            push_status["last_error"] = str(e)
+            set_kv_json(_DAEMON_PUSH_STATUS_KEY, push_status)
+
+    def _push_openclaw_alert(self, status: str, title: str, content: str):
+        """OpenClaw 专用告警：支持静默窗口和连续失败升级。"""
+        now_ts = time.time()
+        policy = get_openclaw_alert_policy_config()
+        suppress_seconds = int(policy.get("suppress_seconds", 1800) or 1800)
+        escalate_after = int(policy.get("escalate_after", 3) or 3)
+        normalized_status = str(status or "").lower()
+        level_order = {"success": 0, "info": 1, "warning": 2, "error": 3, "critical": 4}
+        min_level = str(policy.get("min_level", "warning") or "warning").lower()
+        status_level = level_order.get(normalized_status, 2)
+        min_level_value = level_order.get(min_level, 2)
+        state = get_kv_json(_OPENCLAW_ALERT_STATE_KEY, {}) or {}
+        if isinstance(state, str):
+            try:
+                state = json.loads(state)
+            except Exception:
+                state = {}
+        if not isinstance(state, dict):
+            state = {}
+
+        previous_status = str(state.get("last_status", "") or "")
+        last_push_ts = float(state.get("last_push_ts", 0) or 0)
+        last_success_push_ts = float(state.get("last_success_push_ts", 0) or 0)
+        consecutive_errors = int(state.get("consecutive_errors", 0) or 0)
+        if normalized_status == "error":
+            consecutive_errors = consecutive_errors + 1 if previous_status == "error" else 1
+        elif normalized_status == "success":
+            consecutive_errors = 0
+
+        if not bool(policy.get("enabled", True)):
+            state.update(
+                {
+                    "last_status": normalized_status,
+                    "last_seen_ts": now_ts,
+                    "last_seen_at": datetime.now().isoformat(timespec="seconds"),
+                    "consecutive_errors": consecutive_errors,
+                    "last_result": "disabled_by_policy",
+                    "policy": policy,
+                }
+            )
+            set_kv_json(_OPENCLAW_ALERT_STATE_KEY, state)
+            return
+
+        notify_enabled = bool(policy.get(f"notify_on_{normalized_status}", True))
+        if normalized_status == "success":
+            notify_enabled = bool(policy.get("notify_on_success", False))
+        success_interval = max(0, int(policy.get("success_summary_interval_seconds", 86400) or 86400))
+        success_suppressed = (
+            normalized_status == "success"
+            and success_interval > 0
+            and (now_ts - last_success_push_ts) < success_interval
+        )
+        filtered = status_level < min_level_value
+        if filtered or not notify_enabled or success_suppressed:
+            state.update(
+                {
+                    "last_status": normalized_status,
+                    "last_seen_ts": now_ts,
+                    "last_seen_at": datetime.now().isoformat(timespec="seconds"),
+                    "consecutive_errors": consecutive_errors,
+                    "last_result": "filtered_by_policy"
+                    if filtered
+                    else "disabled_for_status"
+                    if not notify_enabled
+                    else "success_suppressed",
+                    "policy": policy,
+                    "routing": {
+                        "status": normalized_status,
+                        "min_level": min_level,
+                        "notify_enabled": notify_enabled,
+                        "success_interval_seconds": success_interval,
+                        "channels": [],
+                    },
+                }
+            )
+            set_kv_json(_OPENCLAW_ALERT_STATE_KEY, state)
+            return
+
+        escalated = normalized_status == "error" and consecutive_errors >= max(1, escalate_after)
+        suppressed = (
+            normalized_status == previous_status
+            and (now_ts - last_push_ts) < max(0, suppress_seconds)
+            and not escalated
+        )
+        channels = list(policy.get("escalation_channels" if escalated else "default_channels", []) or [])
+
+        state.update(
+            {
+                "last_status": normalized_status,
+                "last_seen_ts": now_ts,
+                "last_seen_at": datetime.now().isoformat(timespec="seconds"),
+                "consecutive_errors": consecutive_errors,
+                "suppressed_count": int(state.get("suppressed_count", 0) or 0) + (1 if suppressed else 0),
+                "escalated": escalated,
+                "routing": {
+                    "status": normalized_status,
+                    "min_level": min_level,
+                    "notify_enabled": notify_enabled,
+                    "escalated": escalated,
+                    "channels": channels,
+                },
+                "policy": policy,
+            }
+        )
+
+        if suppressed:
+            state["last_result"] = "suppressed"
+            set_kv_json(_OPENCLAW_ALERT_STATE_KEY, state)
+            _log.info(f"OpenClaw alert suppressed: status={normalized_status}, title={title}")
+            return
+
+        if escalated:
+            title = f"🚨 OpenClaw连续失败{consecutive_errors}次"
+            content = f"{content}\n\n连续失败次数: {consecutive_errors}"
+        if channels:
+            content = f"{content}\n\n通知通道: {', '.join(channels)}"
+        self._push(title, content, channels=channels)
+        state.update(
+            {
+                "last_push_ts": now_ts,
+                "last_push_at": datetime.now().isoformat(timespec="seconds"),
+                "last_title": title,
+                "last_result": "pushed",
+            }
+        )
+        if normalized_status == "success":
+            state["last_success_push_ts"] = now_ts
+            state["last_success_push_at"] = datetime.now().isoformat(timespec="seconds")
+        set_kv_json(_OPENCLAW_ALERT_STATE_KEY, state)
+
+    def _reset_openclaw_alert_state(self):
+        state = get_kv_json(_OPENCLAW_ALERT_STATE_KEY, {}) or {}
+        if isinstance(state, str):
+            try:
+                state = json.loads(state)
+            except Exception:
+                state = {}
+        if not isinstance(state, dict):
+            state = {}
+        state.update(
+            {
+                "last_status": "success",
+                "last_seen_ts": time.time(),
+                "last_seen_at": datetime.now().isoformat(timespec="seconds"),
+                "consecutive_errors": 0,
+                "escalated": False,
+                "last_result": "reset_on_success",
+            }
+        )
+        set_kv_json(_OPENCLAW_ALERT_STATE_KEY, state)
+
+    def _append_openclaw_run_history(self, payload: dict):
+        history = get_kv_json(_OPENCLAW_RUN_HISTORY_KEY, []) or []
+        if isinstance(history, str):
+            try:
+                history = json.loads(history)
+            except Exception:
+                history = []
+        if not isinstance(history, list):
+            history = []
+        plan = payload.get("execution_plan", {}) if isinstance(payload, dict) else {}
+        sim = payload.get("simulation", {}) if isinstance(payload, dict) else {}
+        trace = payload.get("agent_trace", {}) if isinstance(payload, dict) else {}
+        orchestration = payload.get("coordinator_orchestration", {}) if isinstance(payload, dict) else {}
+        item = {
+            "timestamp": payload.get("timestamp", datetime.now().isoformat(timespec="seconds")),
+            "status": payload.get("status", "unknown"),
+            "summary": payload.get("summary", ""),
+            "boards": payload.get("boards", []),
+            "decision_sample": payload.get("decision_sample", [])[:20] if isinstance(payload.get("decision_sample", []), list) else [],
+            "executed_sample": payload.get("executed_sample", [])[:20] if isinstance(payload.get("executed_sample", []), list) else [],
+            "mode": plan.get("mode", "") if isinstance(plan, dict) else "",
+            "blocked_count": plan.get("blocked_count", 0) if isinstance(plan, dict) else 0,
+            "simulation_passed": bool(sim.get("passed", False)) if isinstance(sim, dict) else False,
+            "simulation_success_runs": int(sim.get("consecutive_success_runs", 0) or 0) if isinstance(sim, dict) else 0,
+            "simulation": {
+                "passed": bool(sim.get("passed", False)) if isinstance(sim, dict) else False,
+                "consecutive_success_runs": int(sim.get("consecutive_success_runs", 0) or 0)
+                if isinstance(sim, dict)
+                else 0,
+                "required_runs": int(sim.get("required_runs", 0) or 0) if isinstance(sim, dict) else 0,
+            },
+            "trace_span_count": int(trace.get("span_count", 0) or 0) if isinstance(trace, dict) else 0,
+            "orchestration_stage_count": int(orchestration.get("stage_count", 0) or 0)
+            if isinstance(orchestration, dict)
+            else 0,
+            "orchestration_action_count": int(orchestration.get("action_count", 0) or 0)
+            if isinstance(orchestration, dict)
+            else 0,
+            "error_count": len(payload.get("errors", []) or []),
+        }
+        history.insert(0, item)
+        set_kv_json(_OPENCLAW_RUN_HISTORY_KEY, history[:30])
+
+    def _summarize_openclaw_observability(self, result: dict) -> dict:
+        trace_items = list(result.get("agent_trace", []) or []) if isinstance(result, dict) else []
+        trace_context = result.get("agent_trace_context", {}) if isinstance(result, dict) else {}
+        spans = []
+        for span in trace_items[:20]:
+            if not isinstance(span, dict):
+                continue
+            spans.append(
+                {
+                    "agent_key": span.get("agent_key", ""),
+                    "stage": span.get("stage", ""),
+                    "status": span.get("status", ""),
+                    "duration_ms": span.get("duration_ms", 0),
+                    "span_id": span.get("span_id", ""),
+                    "parent_span_id": span.get("parent_span_id", ""),
+                    "input_summary": span.get("input_summary", {}),
+                    "output_summary": span.get("output_summary", {}),
+                    "error": span.get("error", ""),
+                }
+            )
+
+        coordinator = result.get("coordinator", {}) if isinstance(result, dict) else {}
+        orchestration_items = coordinator.get("orchestration", []) if isinstance(coordinator, dict) else []
+        action_count = 0
+        items = []
+        for item in list(orchestration_items or [])[:20]:
+            if not isinstance(item, dict):
+                continue
+            actions = item.get("actions_done", item.get("actions", [])) or []
+            if isinstance(actions, list):
+                action_count += len(actions)
+            items.append(
+                {
+                    "stage": item.get("stage", ""),
+                    "ready": bool(item.get("ready", True)),
+                    "mode": item.get("mode", ""),
+                    "reason": item.get("reason", ""),
+                    "actions_done": actions[:5] if isinstance(actions, list) else [],
+                    "timestamp": item.get("timestamp", ""),
+                }
+            )
+
+        return {
+            "agent_trace": {
+                "context": trace_context if isinstance(trace_context, dict) else {},
+                "span_count": len(trace_items),
+                "spans": spans,
+            },
+            "coordinator_orchestration": {
+                "stage_count": len(orchestration_items or []),
+                "action_count": action_count,
+                "items": items,
+            },
+        }
 
     # ===== 任务实现 =====
 
@@ -831,6 +1246,148 @@ class DaemonScheduler:
         except Exception as e:
             _log.error(f"auto-learn error: {e}")
 
+    def _task_openclaw_pipeline(self):
+        """OpenClaw 无人值守全流程：选股、研判、风控、审批、执行、归因、学习。"""
+        _log.info("running headless OpenClaw pipeline...")
+        from core.application.openclaw_service import run_openclaw_pipeline
+
+        try:
+            result = run_openclaw_pipeline(boards=self.boards)
+        except Exception as e:
+            payload = {
+                "timestamp": datetime.now().isoformat(timespec="seconds"),
+                "status": "error",
+                "boards": list(self.boards),
+                "summary": f"OpenClaw后台执行异常: {e}",
+                "errors": [str(e)[:300]],
+                "execution_plan": {"mode": "error", "blocked_count": 0},
+            }
+            set_kv_json("openclaw_last_daemon_run", payload)
+            try:
+                from desktop.agents import record_unattended_trade_guard_simulation
+
+                record_unattended_trade_guard_simulation("error", payload["summary"])
+            except Exception:
+                pass
+            self._append_openclaw_run_history(payload)
+            log_system_event(
+                "openclaw",
+                "daemon",
+                "OpenClaw后台执行失败",
+                detail=payload["summary"],
+                level="error",
+            )
+            self._push_openclaw_alert("error", "⚠️ OpenClaw后台执行失败", payload["summary"])
+            raise
+        if not isinstance(result, dict):
+            payload = {
+                "timestamp": datetime.now().isoformat(timespec="seconds"),
+                "status": "error",
+                "boards": list(self.boards),
+                "summary": "OpenClaw后台执行返回无效结果",
+                "errors": ["non-dict result"],
+                "execution_plan": {"mode": "invalid_result", "blocked_count": 0},
+            }
+            set_kv_json("openclaw_last_daemon_run", payload)
+            try:
+                from desktop.agents import record_unattended_trade_guard_simulation
+
+                record_unattended_trade_guard_simulation("error", payload["summary"])
+            except Exception:
+                pass
+            self._append_openclaw_run_history(payload)
+            log_system_event(
+                "openclaw",
+                "daemon",
+                "OpenClaw后台执行返回无效结果",
+                detail=payload["summary"],
+                level="error",
+            )
+            self._push_openclaw_alert("error", "⚠️ OpenClaw后台执行异常", payload["summary"])
+            return
+        steps = result.get("steps", []) or []
+        errors = result.get("errors", []) or []
+        decisions = result.get("decisions", []) or []
+        executed = result.get("executed_decisions", []) or []
+        execution_plan = result.get("execution_plan", {}) or {}
+        mode = execution_plan.get("mode", "normal") if isinstance(execution_plan, dict) else "normal"
+        failed_steps = [step for step in steps if isinstance(step, dict) and step.get("status") == "error"]
+        blocked_count = execution_plan.get("blocked_count", 0) if isinstance(execution_plan, dict) else 0
+        if errors or failed_steps:
+            status = "error"
+        elif decisions and not executed:
+            status = "warning"
+        else:
+            status = "success"
+        summary = (
+            f"steps={len(steps)}, decisions={len(decisions)}, executed={len(executed)}, "
+            f"errors={len(errors)}, failed_steps={len(failed_steps)}, mode={mode}"
+        )
+        def _decision_sample(rows):
+            items = []
+            for row in list(rows or [])[:20]:
+                if not isinstance(row, dict):
+                    continue
+                items.append(
+                    {
+                        "action": row.get("action", ""),
+                        "code": row.get("code", ""),
+                        "name": row.get("name", ""),
+                        "price": row.get("price", 0),
+                        "shares": row.get("shares", 0),
+                        "sector": row.get("sector") or row.get("industry") or row.get("board") or "",
+                        "reason": str(row.get("reason", "") or "")[:160],
+                    }
+                )
+            return items
+
+        payload = {
+            "timestamp": datetime.now().isoformat(timespec="seconds"),
+            "status": status,
+            "boards": list(self.boards),
+            "summary": summary,
+            "errors": errors[:5],
+            "decision_sample": _decision_sample(decisions),
+            "executed_sample": _decision_sample(executed),
+            "failed_steps": [
+                {
+                    "name": step.get("name", ""),
+                    "error": step.get("error", ""),
+                }
+                for step in failed_steps[:5]
+            ],
+            "execution_plan": {
+                "mode": mode,
+                "blocked_count": blocked_count,
+            },
+        }
+        payload.update(self._summarize_openclaw_observability(result))
+        set_kv_json("openclaw_last_daemon_run", payload)
+        try:
+            from desktop.agents import record_unattended_trade_guard_simulation
+
+            payload["simulation"] = record_unattended_trade_guard_simulation(status, summary)
+            set_kv_json("openclaw_last_daemon_run", payload)
+        except Exception:
+            pass
+        self._append_openclaw_run_history(payload)
+        level = "error" if status == "error" else "warning" if status == "warning" else "info"
+        log_system_event(
+            "openclaw",
+            "daemon",
+            f"OpenClaw后台执行{status}",
+            detail=summary,
+            level=level,
+        )
+        if status == "error":
+            detail = "\n".join([summary] + [str(item)[:120] for item in errors[:3]])
+            self._push_openclaw_alert("error", "⚠️ OpenClaw后台执行失败", detail)
+        elif status == "warning":
+            self._push_openclaw_alert("warning", "⚠️ OpenClaw后台执行未产生交易", summary)
+        else:
+            self._reset_openclaw_alert_state()
+        _log.info(f"headless OpenClaw pipeline done: {summary}")
+
     def _task_daily_report(self):
         """走势校准 + 日报推送。"""
         _log.info("running daily report...")
@@ -967,48 +1524,55 @@ class DaemonScheduler:
 
     def run(self):
         """主循环：每分钟检查调度表 + 定期检查预警。"""
+        if not self._acquire_leader():
+            _log.warning("daemon skipped: another scheduler instance is active")
+            return
         _log.info(f"FinQuanta Daemon started, boards: {self.boards}")
         last_alert = 0
 
-        while self._running:
-            now = datetime.now()
-            today = now.strftime("%Y-%m-%d")
-            current_time = now.strftime("%H:%M")
+        try:
+            while self._running:
+                now = datetime.now()
+                today = now.strftime("%Y-%m-%d")
+                current_time = now.strftime("%H:%M")
 
-            if self._is_trading_day():
-                self._load_time_overrides()
-                # 检查定时任务
-                for task in SCHEDULE:
-                    task_key = task.get("key", "")
-                    if task_key in self.disabled_tasks:
-                        continue
-                    task_time = self._get_task_time(task)
-                    run_key = f"{today}_{task_time}_{task['name']}"
-                    if current_time >= task_time and run_key not in self._last_run:
-                        _log.info(f"executing: {task['name']} ({task_time})")
-                        try:
-                            func = getattr(self, task["func"])
-                            run_task(task["name"], "daemon", func)
-                            log_system_event(
-                                "daemon",
-                                "task",
-                                f"任务完成: {task['name']}",
-                                detail=f"time={task_time}",
-                            )
-                        except Exception as e:
-                            _log.error(f"task {task['name']} failed: {e}")
-                        self._last_run[run_key] = now.isoformat()
-                        self._save_last_run()
+                self._renew_leader()
+                if self._is_trading_day():
+                    self._load_time_overrides()
+                    # 检查定时任务
+                    for task in SCHEDULE:
+                        task_key = task.get("key", "")
+                        if task_key in self.disabled_tasks:
+                            continue
+                        task_time = self._get_task_time(task)
+                        run_key = f"{today}_{task_time}_{task['name']}"
+                        if current_time >= task_time and run_key not in self._last_run:
+                            _log.info(f"executing: {task['name']} ({task_time})")
+                            try:
+                                func = getattr(self, task["func"])
+                                run_task(task["name"], "daemon", func)
+                                log_system_event(
+                                    "daemon",
+                                    "task",
+                                    f"任务完成: {task['name']}",
+                                    detail=f"time={task_time}",
+                                )
+                            except Exception as e:
+                                _log.error(f"task {task['name']} failed: {e}")
+                            self._last_run[run_key] = now.isoformat()
+                            self._save_last_run()
 
-                # 预警检查（交易时间内每5分钟）
-                if "alert_check" not in self.disabled_tasks:
-                    t = now.hour * 100 + now.minute
-                    if (915 <= t <= 1130 or 1300 <= t <= 1500):
-                        if time.time() - last_alert > ALERT_INTERVAL:
-                            self._check_alerts()
-                            last_alert = time.time()
+                    # 预警检查（交易时间内每5分钟）
+                    if "alert_check" not in self.disabled_tasks:
+                        t = now.hour * 100 + now.minute
+                        if (915 <= t <= 1130 or 1300 <= t <= 1500):
+                            if time.time() - last_alert > ALERT_INTERVAL:
+                                self._check_alerts()
+                                last_alert = time.time()
 
-            time.sleep(30)
+                time.sleep(30)
+        finally:
+            self._release_leader()
 
     def stop(self):
         self._running = False
@@ -1021,6 +1585,7 @@ class DaemonScheduler:
             ("refresh_kline", self._task_refresh_kline,  "刷新K线日线"),
             ("scan_stocks",   self._task_scan_stocks,    "选股雷达扫描"),
             ("short_term",    self._task_short_term,     "短期选股分析"),
+            ("openclaw_pipeline", self._task_openclaw_pipeline, "OpenClaw自主全流程"),
             ("ai_decision",   self._task_ai_decision,    "AI 三仓决策"),
             ("trend_verify",  self._task_trend_verify,   "走势验证校准"),
             ("daily_report",  self._task_daily_report,   "日报推送"),
@@ -1047,8 +1612,239 @@ def start_daemon(boards: list[str] = None, disabled_tasks: set = None):
     return daemon
 
 
+def _load_openclaw_daemon_boards(default: list[str] | None = None) -> list[str]:
+    fallback = default or ["人工智能", "芯片", "量子科技"]
+    raw = get_kv_json("openclaw_daemon_boards", None)
+    if isinstance(raw, list):
+        boards = [str(item).strip() for item in raw if str(item).strip()]
+        return boards or fallback
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, list):
+                boards = [str(item).strip() for item in parsed if str(item).strip()]
+                return boards or fallback
+        except Exception:
+            boards = [item.strip() for item in re.split(r"[,，\s]+", raw) if item.strip()]
+            return boards or fallback
+    return fallback
+
+
+def _safe_int(value, default: int) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return default
+
+
+def _normalize_channels(value, default: list[str]) -> list[str]:
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            if isinstance(parsed, list):
+                value = parsed
+            else:
+                value = re.split(r"[,，\s]+", value)
+        except Exception:
+            value = re.split(r"[,，\s]+", value)
+    if isinstance(value, list):
+        channels = [str(item).strip() for item in value if str(item).strip()]
+        return channels or list(default)
+    return list(default)
+
+
+def get_openclaw_alert_policy_config() -> dict:
+    cfg = dict(_OPENCLAW_ALERT_POLICY_DEFAULTS)
+    cfg["suppress_seconds"] = _safe_int(
+        os.environ.get("FINQUANTA_OPENCLAW_ALERT_SUPPRESS_SECONDS"),
+        cfg["suppress_seconds"],
+    )
+    cfg["escalate_after"] = _safe_int(
+        os.environ.get("FINQUANTA_OPENCLAW_ALERT_ESCALATE_AFTER"),
+        cfg["escalate_after"],
+    )
+    stored = get_kv_json(_OPENCLAW_ALERT_POLICY_KEY, {}) or {}
+    if isinstance(stored, str):
+        try:
+            stored = json.loads(stored)
+        except Exception:
+            stored = {}
+    if isinstance(stored, dict):
+        cfg.update({k: v for k, v in stored.items() if v is not None})
+    cfg["enabled"] = bool(cfg.get("enabled", True))
+    cfg["notify_on_success"] = bool(cfg.get("notify_on_success", False))
+    cfg["notify_on_warning"] = bool(cfg.get("notify_on_warning", True))
+    cfg["notify_on_error"] = bool(cfg.get("notify_on_error", True))
+    cfg["suppress_seconds"] = max(0, min(86400, _safe_int(cfg.get("suppress_seconds"), 1800)))
+    cfg["escalate_after"] = max(1, min(100, _safe_int(cfg.get("escalate_after"), 3)))
+    cfg["success_summary_interval_seconds"] = max(
+        0,
+        min(604800, _safe_int(cfg.get("success_summary_interval_seconds"), 86400)),
+    )
+    min_level = str(cfg.get("min_level", "warning") or "warning").lower()
+    cfg["min_level"] = min_level if min_level in {"success", "info", "warning", "error", "critical"} else "warning"
+    cfg["default_channels"] = _normalize_channels(
+        cfg.get("default_channels"),
+        _OPENCLAW_ALERT_POLICY_DEFAULTS["default_channels"],
+    )
+    cfg["escalation_channels"] = _normalize_channels(
+        cfg.get("escalation_channels"),
+        _OPENCLAW_ALERT_POLICY_DEFAULTS["escalation_channels"],
+    )
+    return cfg
+
+
+def set_openclaw_alert_policy_config(payload: dict) -> dict:
+    current = get_openclaw_alert_policy_config()
+    incoming = payload or {}
+    if "enabled" in incoming:
+        current["enabled"] = bool(incoming.get("enabled"))
+    for key in ("notify_on_success", "notify_on_warning", "notify_on_error"):
+        if key in incoming:
+            current[key] = bool(incoming.get(key))
+    if "suppress_seconds" in incoming:
+        current["suppress_seconds"] = max(0, min(86400, _safe_int(incoming.get("suppress_seconds"), 1800)))
+    if "escalate_after" in incoming:
+        current["escalate_after"] = max(1, min(100, _safe_int(incoming.get("escalate_after"), 3)))
+    if "success_summary_interval_seconds" in incoming:
+        current["success_summary_interval_seconds"] = max(
+            0,
+            min(604800, _safe_int(incoming.get("success_summary_interval_seconds"), 86400)),
+        )
+    if "min_level" in incoming:
+        min_level = str(incoming.get("min_level", "warning") or "warning").lower()
+        current["min_level"] = min_level if min_level in {"success", "info", "warning", "error", "critical"} else "warning"
+    if "default_channels" in incoming:
+        current["default_channels"] = _normalize_channels(
+            incoming.get("default_channels"),
+            _OPENCLAW_ALERT_POLICY_DEFAULTS["default_channels"],
+        )
+    if "escalation_channels" in incoming:
+        current["escalation_channels"] = _normalize_channels(
+            incoming.get("escalation_channels"),
+            _OPENCLAW_ALERT_POLICY_DEFAULTS["escalation_channels"],
+        )
+    set_kv_json(_OPENCLAW_ALERT_POLICY_KEY, current)
+    return get_openclaw_alert_policy_config()
+
+
+def _extract_schedule_times(raw: str) -> list[str]:
+    text = str(raw or "")
+    # Supports entries like "09:50", "10:00,11:00", "10:30~14:30(5次)".
+    return re.findall(r"\b([01]\d|2[0-3]):[0-5]\d\b", text)
+
+
+def _is_pid_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    if pid == os.getpid():
+        return True
+    if os.name == "nt":
+        try:
+            flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            result = subprocess.run(
+                ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="ignore",
+                timeout=3,
+                creationflags=flags,
+            )
+            return any(f'"{pid}"' in line for line in result.stdout.splitlines())
+        except Exception:
+            return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except Exception:
+        return False
+
+
+def _build_next_task_snapshot(now: datetime, disabled_tasks: set[str], overrides: dict) -> dict:
+    best_dt = None
+    best_task = None
+    for day_offset in range(0, 7):
+        day = now.date() + timedelta(days=day_offset)
+        for task in SCHEDULE:
+            task_key = str(task.get("key", "")).strip()
+            if task_key in disabled_tasks:
+                continue
+            raw_time = overrides.get(task_key) or task.get("time", "")
+            for hhmm in _extract_schedule_times(raw_time):
+                try:
+                    run_dt = datetime.combine(day, datetime.strptime(hhmm, "%H:%M").time())
+                except Exception:
+                    continue
+                if run_dt <= now:
+                    continue
+                if best_dt is None or run_dt < best_dt:
+                    best_dt = run_dt
+                    best_task = {
+                        "task_key": task_key,
+                        "task_name": task.get("name", task_key),
+                        "time": hhmm,
+                        "scheduled_at": run_dt.isoformat(timespec="seconds"),
+                    }
+    return best_task or {"task_key": "", "task_name": "", "time": "", "scheduled_at": ""}
+
+
+def get_daemon_runtime_status() -> dict:
+    now = datetime.now()
+    leader = get_kv_json(_DAEMON_LEADER_KEY, {}) or {}
+    if isinstance(leader, str):
+        try:
+            leader = json.loads(leader)
+        except Exception:
+            leader = {}
+    raw_disabled = get_kv_json("sched_disabled_tasks", []) or []
+    if isinstance(raw_disabled, str):
+        try:
+            raw_disabled = json.loads(raw_disabled)
+        except Exception:
+            raw_disabled = []
+    disabled = {str(item) for item in raw_disabled} if isinstance(raw_disabled, list) else set()
+    overrides = get_kv_json("sched_time_overrides", {}) or {}
+    if isinstance(overrides, str):
+        try:
+            overrides = json.loads(overrides)
+        except Exception:
+            overrides = {}
+    if not isinstance(overrides, dict):
+        overrides = {}
+
+    heartbeat_ts = float(leader.get("heartbeat_ts", 0) or 0) if isinstance(leader, dict) else 0
+    leader_pid = int(leader.get("pid", 0) or 0) if isinstance(leader, dict) else 0
+    active = bool(leader.get("token")) and (time.time() - heartbeat_ts) < _LEADER_TTL_SECONDS and _is_pid_alive(leader_pid)
+    push_status = get_kv_json(_DAEMON_PUSH_STATUS_KEY, {}) or {}
+    if isinstance(push_status, str):
+        try:
+            push_status = json.loads(push_status)
+        except Exception:
+            push_status = {}
+    duplicate_lock = get_kv_json(_DAEMON_DUPLICATE_KEY, {}) or {}
+    if isinstance(duplicate_lock, str):
+        try:
+            duplicate_lock = json.loads(duplicate_lock)
+        except Exception:
+            duplicate_lock = {}
+
+    return {
+        "active": active,
+        "leader_pid": leader_pid,
+        "leader_token": str(leader.get("token", "")) if isinstance(leader, dict) else "",
+        "heartbeat_at": str(leader.get("heartbeat_at", "")) if isinstance(leader, dict) else "",
+        "heartbeat_age_seconds": int(max(0.0, time.time() - heartbeat_ts)) if heartbeat_ts else -1,
+        "disabled_tasks": sorted(disabled),
+        "next_task": _build_next_task_snapshot(now, disabled, overrides),
+        "push_status": push_status if isinstance(push_status, dict) else {},
+        "duplicate_lock": duplicate_lock if isinstance(duplicate_lock, dict) else {},
+    }
+
+
 # 独立运行入口
 if __name__ == "__main__":
+    os.makedirs("data_cache", exist_ok=True)
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(name)s] %(message)s",

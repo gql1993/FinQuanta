@@ -342,7 +342,7 @@ def build_decision_history_context(limit: int = 5) -> dict[str, Any]:
     try:
         conn = RepoCompatConnection()
         rows = conn.execute(
-            "SELECT timestamp, decisions, actual_results "
+            "SELECT timestamp, decisions, actual_results, verification_summary, guardrail_summary "
             "FROM ai_decision_memory WHERE calibrated=1 "
             "ORDER BY timestamp DESC LIMIT ?",
             (limit,),
@@ -352,10 +352,12 @@ def build_decision_history_context(limit: int = 5) -> dict[str, Any]:
             return {"items": [], "summary_text": ""}
 
         items = []
-        for ts, decisions_json, results_json in rows:
+        for ts, decisions_json, results_json, verification_json, guardrail_json in rows:
             try:
                 decisions = json.loads(decisions_json) if decisions_json else []
                 results = json.loads(results_json) if results_json else {}
+                verification = json.loads(verification_json) if verification_json else {}
+                guardrails = json.loads(guardrail_json) if guardrail_json else {}
                 pnl = results.get("avg_pnl", 0)
                 correct = results.get("correct_ratio", 0)
                 count = len(decisions) if isinstance(decisions, list) else 0
@@ -365,6 +367,8 @@ def build_decision_history_context(limit: int = 5) -> dict[str, Any]:
                         "decision_count": count,
                         "correct_ratio": correct,
                         "avg_pnl": pnl,
+                        "verified_count": verification.get("verified_count", 0),
+                        "blocked_buy_count": guardrails.get("blocked_buy_count", 0),
                     }
                 )
             except Exception:

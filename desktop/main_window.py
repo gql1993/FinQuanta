@@ -42,6 +42,8 @@ from desktop.panels.trend_verify_panel import TrendVerifyPanel
 from desktop.panels.settings import SettingsPanel
 from desktop.panels.openclaw_panel import OpenClawPanel
 from desktop.panels.ops_center import OpsCenterPanel
+from desktop.ui_tokens import APP_FONT
+from desktop.workers import Worker
 
 
 class MainWindow(QMainWindow):
@@ -155,6 +157,12 @@ class MainWindow(QMainWindow):
                     row_time = conn.execute(
                         "SELECT value FROM kv_store WHERE key='sched_time_overrides'"
                     ).fetchone()
+                    row_boards = conn.execute(
+                        "SELECT value FROM kv_store WHERE key='openclaw_daemon_boards'"
+                    ).fetchone()
+                    row_last_oc = conn.execute(
+                        "SELECT value FROM kv_store WHERE key='openclaw_last_daemon_run'"
+                    ).fetchone()
                     conn.close()
                     if row:
                         disabled = set(json.loads(row[0]))
@@ -165,12 +173,26 @@ class MainWindow(QMainWindow):
                         overrides = json.loads(row_time[0])
                         for key, time_text in overrides.items():
                             self.settings.set_schedule_time(key, time_text)
+                        self.settings.openclaw_daemon_time.setText(
+                            str(overrides.get("openclaw_pipeline", "") or "10:25")
+                        )
+                    else:
+                        self.settings.openclaw_daemon_time.setText("10:25")
+                    if row_boards:
+                        loaded_boards = json.loads(row_boards[0])
+                        if isinstance(loaded_boards, list) and loaded_boards:
+                            boards = [str(item) for item in loaded_boards if str(item).strip()]
+                    self.settings.openclaw_daemon_boards.setText(",".join(boards))
+                    if row_last_oc:
+                        self._apply_openclaw_daemon_last_run_label(json.loads(row_last_oc[0]))
                 except Exception:
                     pass
 
                 self._daemon = start_daemon(boards, disabled_tasks=disabled)
                 self.settings.sched_status.setText("🟢 调度引擎: 运行中")
-                self.settings.sched_status.setStyleSheet("color:#66bb6a; font-size:12px;")
+                self.settings.sched_status.setStyleSheet(
+                    f"color:#66bb6a; font-size:{APP_FONT['body']}px;"
+                )
                 _log.info("daemon scheduler started")
             except Exception as e:
                 _log.error(f"daemon start error: {e}")
@@ -210,7 +232,7 @@ class MainWindow(QMainWindow):
     def _build_tabs(self):
         self.tabs = QTabWidget()
         self.tabs.setTabPosition(QTabWidget.TabPosition.West)
-        self.tabs.setFont(QFont("", 11))
+        self.tabs.setFont(QFont("", APP_FONT["caption"]))
 
         self.dashboard = DashboardPanel()
         self.screening = ScreeningPanel()
@@ -234,13 +256,13 @@ class MainWindow(QMainWindow):
         # 顶级 tab
         self.tabs.addTab(self.dashboard, "📈 总览")
         self.tabs.addTab(self.screening, "📡 选股")
+        self.tabs.addTab(self.stock_analysis, "📉 个股")
         self.tabs.addTab(self.short_term, "⚡ 短期选股")
         self.tabs.addTab(self.portfolio, "💼 手动仓")
         self.tabs.addTab(self.ai_portfolio, "🤖 AI仓")
         self.tabs.addTab(self.ai_chat, "💬 AI助手")
         self.tabs.addTab(self.openclaw, "🦀 OpenClaw")
         self.tabs.addTab(self.ops_center, "🛰 运行中心")
-        self.tabs.addTab(self.stock_analysis, "📉 个股")
         self.tabs.addTab(self.settings, "⚙️ 设置")
 
         self.setCentralWidget(self.tabs)
@@ -272,7 +294,9 @@ class MainWindow(QMainWindow):
             self.status.showMessage(f"跳转失败: {e}")
 
     def _connect_signals(self):
+        self.tabs.currentChanged.connect(self._on_tab_changed)
         self.screening.btn_scan.clicked.connect(self._on_scan)
+        self.screening.btn_multi_scan.clicked.connect(self._on_multi_scan)
         self.screening.btn_quantum_run.clicked.connect(self._on_quantum_optimize)
         self.screening.btn_pure_q_run.clicked.connect(self._on_pure_quantum_optimize)
         self.screening.btn_commodity_load.clicked.connect(self._on_commodity_load)
@@ -292,6 +316,7 @@ class MainWindow(QMainWindow):
         self.ai_chat.msg_input.returnPressed.connect(self._on_ai_send)
         self.ai_chat.btn_confirm_action.clicked.connect(self._on_ai_confirm_action)
         self.ai_chat.btn_cancel_action.clicked.connect(self._on_ai_cancel_action)
+        self.ai_chat.open_settings_requested.connect(self._open_settings_ai)
         self.event_panel.btn_analyze.clicked.connect(self._on_event_analyze)
         self.event_panel.btn_save.clicked.connect(self._on_event_save)
         self.event_panel.btn_fetch_news.clicked.connect(self._on_fetch_news)
@@ -308,6 +333,7 @@ class MainWindow(QMainWindow):
         self.fund_panel.btn_load_mgr.clicked.connect(self._on_star_mgr_load)
         self.fund_panel.mgr_holdings_table.cellDoubleClicked.connect(self._on_star_stock_dblclick)
         self.trend_verify.btn_calibrate.clicked.connect(self._on_trend_calibrate)
+        self.trend_verify.btn_batch_failure.clicked.connect(self._on_trend_batch_failure)
         self.trend_verify.btn_ai_analyze.clicked.connect(self._on_trend_ai_analyze)
         self.trend_verify.table.cellDoubleClicked.connect(self._on_trend_verify_dblclick)
         self.ai_portfolio.btn_save_config.clicked.connect(self._on_ai_save_config)
@@ -346,7 +372,11 @@ class MainWindow(QMainWindow):
             lambda: self.openclaw.monitor_log.append("📋 基金持仓更新中...") or self._on_openclaw_connect()
         )
         self.openclaw.btn_refresh_ops.clicked.connect(self._on_openclaw_refresh_ops)
+        self.openclaw.btn_run_guard_replay.clicked.connect(self._on_openclaw_guard_replay)
+        self.openclaw.btn_rollback_config_audit.clicked.connect(self._on_openclaw_config_rollback)
         self.ops_center.btn_refresh.clicked.connect(self._on_ops_center_refresh)
+        self.ops_center.btn_self_check.clicked.connect(self._on_ops_center_self_check)
+        self.ops_center.suggestion_jump_requested.connect(self._on_ops_center_suggestion_jump)
         self.openclaw.btn_nl_run.clicked.connect(self._on_openclaw_nl_strategy)
         self.openclaw.btn_generate_report.clicked.connect(self._on_openclaw_report)
         self.openclaw.btn_suggest_optimize.clicked.connect(self._on_openclaw_optimize)
@@ -358,8 +388,17 @@ class MainWindow(QMainWindow):
         self.settings.btn_save_push.clicked.connect(self._on_save_push)
         self.settings.btn_test_push.clicked.connect(self._on_test_push)
         self.settings.btn_save_ai.clicked.connect(self._on_settings_save_ai)
+        self.settings.btn_save_coord_policy.clicked.connect(self._on_save_coordinator_policy)
+        self.settings.btn_reset_coord_policy.clicked.connect(self._on_reset_coordinator_policy)
+        self.settings.btn_save_trade_guard.clicked.connect(self._on_save_unattended_trade_guard)
+        self.settings.btn_reset_trade_guard.clicked.connect(self._on_reset_unattended_trade_guard)
+        self.settings.btn_save_openclaw_alert_policy.clicked.connect(self._on_save_openclaw_alert_policy)
+        self.settings.btn_reset_openclaw_alert_policy.clicked.connect(self._on_reset_openclaw_alert_policy)
+        self.settings.btn_refresh_security_check.clicked.connect(self._load_auth_security_to_settings)
+        self.settings.btn_cleanup_expired_tokens.clicked.connect(self._on_cleanup_expired_tokens)
         self.settings.btn_save_sched.clicked.connect(self._on_save_sched_config)
         self.settings.btn_run_pipeline_now.clicked.connect(self._on_run_pipeline_now)
+        self.settings.btn_test_openclaw_daemon.clicked.connect(self._on_test_openclaw_daemon)
         self.settings.btn_view_sched_log.clicked.connect(self._on_view_sched_log)
         self.dashboard.pos_table.cellDoubleClicked.connect(self._on_dashboard_stock_dblclick)
         self.portfolio.pos_table.cellDoubleClicked.connect(self._on_portfolio_stock_dblclick)
@@ -370,7 +409,15 @@ class MainWindow(QMainWindow):
         self.portfolio.btn_action_detail.clicked.connect(lambda: self._action_detail("manual"))
         self.portfolio.btn_action_condition.clicked.connect(lambda: self._action_condition("manual"))
         self.portfolio.btn_action_ai_suggest.clicked.connect(lambda: self._action_ai_suggest("manual"))
-        self.screening.result_table.cellDoubleClicked.connect(self._on_screening_stock_dblclick)
+        self.screening.scan_stock_activated.connect(self._navigate_to_stock)
+
+    def _on_tab_changed(self, index: int):
+        """Tab 切换时刷新部分动态 UI（避免欢迎页旧缓存样式残留）。"""
+        try:
+            if self.tabs.widget(index) is self.ai_chat and not getattr(self.ai_chat, "_has_messages", True):
+                self.ai_chat._show_welcome()
+        except Exception:
+            pass
 
     def _on_dashboard_stock_dblclick(self, row, col):
         item = self.dashboard.pos_table.item(row, 0)
@@ -492,7 +539,9 @@ class MainWindow(QMainWindow):
         panel = self.portfolio if source == "manual" else self.ai_portfolio
         panel.ai_suggest_label.setVisible(True)
         panel.ai_suggest_label.setText(f"🦀 OpenClaw 正在分析 {code}...")
-        panel.ai_suggest_label.setStyleSheet("color:#ffb74d; font-size:12px; padding:4px;")
+        panel.ai_suggest_label.setStyleSheet(
+            f"color:#ffb74d; font-size:{APP_FONT['body']}px; padding:4px;"
+        )
         self.status.showMessage(f"🦀 OpenClaw 研判 {code}...")
 
         from desktop.workers import Worker
@@ -556,12 +605,16 @@ class MainWindow(QMainWindow):
 
         def _done(result):
             panel.ai_suggest_label.setText(f"🦀 {code} 研判：{result}")
-            panel.ai_suggest_label.setStyleSheet("color:#4fc3f7; font-size:12px; padding:4px;")
+            panel.ai_suggest_label.setStyleSheet(
+                f"color:#4fc3f7; font-size:{APP_FONT['body']}px; padding:4px;"
+            )
             self.status.showMessage(f"🦀 OpenClaw 研判完成")
 
         def _err(msg):
             panel.ai_suggest_label.setText(f"❌ 研判失败: {msg}")
-            panel.ai_suggest_label.setStyleSheet("color:#ef5350; font-size:12px; padding:4px;")
+            panel.ai_suggest_label.setStyleSheet(
+                f"color:#ef5350; font-size:{APP_FONT['body']}px; padding:4px;"
+            )
 
         w = Worker(_do)
         w.finished.connect(_done)
@@ -582,6 +635,14 @@ class MainWindow(QMainWindow):
     def _set_theme(self, theme: str):
         self._current_theme = theme
         self.setStyleSheet(DARK_STYLE if theme == "dark" else LIGHT_STYLE)
+        try:
+            self.ai_chat.set_theme(theme)
+        except Exception:
+            pass
+        try:
+            self.ai_portfolio.set_theme(theme)
+        except Exception:
+            pass
 
     def closeEvent(self, event):
         event.accept()
@@ -616,15 +677,17 @@ class MainWindow(QMainWindow):
         self._load_ai_config()
         self._load_settings_ai_config()
         self._load_push_config()
+        self._load_coordinator_policy_to_settings()
+        self._load_unattended_trade_guard_to_settings()
+        self._load_openclaw_alert_policy_to_settings()
+        self._load_auth_security_to_settings()
         self._load_openclaw_panel_config()
         # OpenClaw 自动连接（延迟3秒，等数据加载完）
         from PyQt6.QtCore import QTimer
         QTimer.singleShot(3000, self._auto_connect_openclaw)
         QTimer.singleShot(3500, self._on_ops_center_refresh)
         try:
-            from desktop.trend_verify import get_records, get_accuracy_stats
-            self.trend_verify.update_records(get_records(200))
-            self.trend_verify.update_stats(get_accuracy_stats())
+            self._refresh_trend_verify_panel()
         except Exception as e:
             _log.warning(f"trend_verify load: {e}")
 
@@ -654,12 +717,16 @@ class MainWindow(QMainWindow):
                     f"✅ AI 已配置: {provider} / {model or 'default'}  "
                     f"（修改请到「⚙️ 设置」→ AI模型配置）"
                 )
-                self.ai_portfolio.ai_config_label.setStyleSheet("color:#66bb6a; font-size:12px;")
+                self.ai_portfolio.ai_config_label.setStyleSheet(
+                    f"color:#66bb6a; font-size:{APP_FONT['body']}px;"
+                )
             else:
                 self.ai_portfolio.ai_config_label.setText(
                     "⚠ AI 未配置，请到「⚙️ 设置」→ AI模型配置 中设置 API Key"
                 )
-                self.ai_portfolio.ai_config_label.setStyleSheet("color:#ffb74d; font-size:12px;")
+                self.ai_portfolio.ai_config_label.setStyleSheet(
+                    f"color:#ffb74d; font-size:{APP_FONT['body']}px;"
+                )
 
             if model:
                 idx = self.ai_portfolio.model_combo.findText(model)
@@ -684,7 +751,8 @@ class MainWindow(QMainWindow):
                 cfg = json.loads(row[0])
                 key = cfg.get("api_key", "")
                 base_url = cfg.get("base_url", "")
-                provider = cfg.get("provider", "")
+                provider = cfg.get("provider", "") or self._infer_provider_from_base_url(base_url)
+                model = cfg.get("model", "") or self._default_model_for_provider(provider)
                 if key:
                     self.settings.ai_key.setText(key)
                 if base_url:
@@ -693,8 +761,52 @@ class MainWindow(QMainWindow):
                     idx = self.settings.ai_provider.findText(provider)
                     if idx >= 0:
                         self.settings.ai_provider.setCurrentIndex(idx)
+                if model:
+                    idx = self.settings.ai_model.findText(model)
+                    if idx >= 0:
+                        self.settings.ai_model.setCurrentIndex(idx)
+                    else:
+                        self.settings.ai_model.setCurrentText(model)
+                self._refresh_ai_model_summary(provider=provider, model=model)
+            else:
+                provider = self.settings.ai_provider.currentText()
+                model = self.settings.ai_model.currentText() or self._default_model_for_provider(provider)
+                self._refresh_ai_model_summary(provider=provider, model=model)
         except Exception:
             pass
+
+    @staticmethod
+    def _infer_provider_from_base_url(base_url: str) -> str:
+        text = (base_url or "").lower()
+        if "deepseek" in text:
+            return "DeepSeek"
+        if "openai" in text:
+            return "OpenAI"
+        if "anthropic" in text:
+            return "Claude"
+        if "googleapis" in text or "gemini" in text:
+            return "Gemini"
+        return "自定义"
+
+    @staticmethod
+    def _default_model_for_provider(provider: str) -> str:
+        mapping = {
+            "DeepSeek": "deepseek-chat",
+            "OpenAI": "gpt-4o",
+            "Gemini": "gemini-pro",
+            "Claude": "claude-3-sonnet",
+            "自定义": "deepseek-chat",
+        }
+        return mapping.get(provider, "deepseek-chat")
+
+    def _refresh_ai_model_summary(self, provider: str = "", model: str = ""):
+        provider_text = provider or self.settings.ai_provider.currentText()
+        model_text = model or self.settings.ai_model.currentText() or self._default_model_for_provider(provider_text)
+        self.ai_chat.set_model_summary(provider_text, model_text)
+
+    def _open_settings_ai(self):
+        self.tabs.setCurrentWidget(self.settings)
+        self.status.showMessage("已切换到设置页，请在「AI 模型配置」中修改。")
 
     def _load_push_config(self):
         """启动时加载已保存的推送配置，回填到 UI。"""
@@ -714,7 +826,9 @@ class MainWindow(QMainWindow):
                 channels.append("企业微信")
             if channels:
                 self.settings.push_status.setText(f"✅ 已配置: {' + '.join(channels)}")
-                self.settings.push_status.setStyleSheet("color:#66bb6a; font-size:11px;")
+                self.settings.push_status.setStyleSheet(
+                    f"color:#66bb6a; font-size:{APP_FONT['caption']}px;"
+                )
         except Exception:
             pass
 
@@ -958,10 +1072,32 @@ class MainWindow(QMainWindow):
 
         total_equity = cash + total_mv
         total_return = (total_equity - initial_capital) / initial_capital * 100 if initial_capital > 0 else 0
+        history = pf.get("history", []) or []
+        trade_history = [
+            item for item in history
+            if str(item.get("action", "")).upper() in {"BUY", "SELL"}
+        ]
+        sell_history = [
+            item for item in history
+            if str(item.get("action", "")).upper() == "SELL"
+        ]
+        if sell_history:
+            realized_pnl = sum(float(item.get("pnl", 0) or 0) for item in sell_history)
+        else:
+            closed_trades = pf.get("closed_trades", []) or []
+            realized_pnl = sum(float(item.get("pnl", 0) or 0) for item in closed_trades)
+        total_pnl = total_equity - initial_capital
+        if trade_history:
+            total_trades = len(trade_history)
+        else:
+            closed_trades = pf.get("closed_trades", []) or []
+            total_trades = len(positions) + len(closed_trades) * 2
 
         summary = {
             "total_equity": round(total_equity, 2),
             "total_return": round(total_return, 2),
+            "realized_pnl": round(realized_pnl, 2),
+            "total_pnl": round(total_pnl, 2),
             "position_value": round(total_mv, 2),
             "total_cost": round(total_cost, 2),
             "cash": round(cash, 2),
@@ -969,6 +1105,7 @@ class MainWindow(QMainWindow):
             "unrealized_pnl_pct": round(unrealized_pnl / total_cost * 100, 2) if total_cost > 0 else 0,
             "today_pnl": round(today_pnl, 2),
             "num_positions": len(positions),
+            "total_trades": total_trades,
             "max_positions": 8,
             "position_ratio": round(total_mv / total_equity * 100, 1) if total_equity > 0 else 0,
             "positions": pos_details,
@@ -1053,7 +1190,7 @@ class MainWindow(QMainWindow):
                 lbl95.setText(f"¥{var95:,.0f}" if var95 > 0 else "暂无")
                 lbl95.setStyleSheet(
                     f"color: {'#ef5350' if var95 > 50000 else '#ffb74d' if var95 > 20000 else '#4fc3f7'};"
-                    f"font-size:15px; font-weight:bold; border:none;"
+                    f"font-size:{APP_FONT['section']}px; font-weight:bold; border:none;"
                 )
 
             lbl99 = self.dashboard.risk_labels.get("VaR(99%)")
@@ -1061,7 +1198,7 @@ class MainWindow(QMainWindow):
                 lbl99.setText(f"¥{var99:,.0f}" if var99 > 0 else "暂无")
                 lbl99.setStyleSheet(
                     f"color: {'#ef5350' if var99 > 80000 else '#ffb74d' if var99 > 40000 else '#ce93d8'};"
-                    f"font-size:15px; font-weight:bold; border:none;"
+                    f"font-size:{APP_FONT['section']}px; font-weight:bold; border:none;"
                 )
 
             lbl_exp = self.dashboard.risk_labels.get("最大单股敞口")
@@ -1070,7 +1207,7 @@ class MainWindow(QMainWindow):
                     lbl_exp.setText(f"{exp:.0%}  ({r.get('max_name', '-')})")
                     lbl_exp.setStyleSheet(
                         f"color: {'#ef5350' if exp > 0.4 else '#ffb74d' if exp > 0.25 else '#81c784'};"
-                        f"font-size:15px; font-weight:bold; border:none;"
+                        f"font-size:{APP_FONT['section']}px; font-weight:bold; border:none;"
                     )
                 else:
                     lbl_exp.setText("暂无持仓")
@@ -1082,7 +1219,7 @@ class MainWindow(QMainWindow):
                     lbl_hhi.setText(f"{hhi:.3f}  ({level})")
                     lbl_hhi.setStyleSheet(
                         f"color: {'#ef5350' if hhi > 0.5 else '#ffb74d' if hhi > 0.25 else '#81c784'};"
-                        f"font-size:15px; font-weight:bold; border:none;"
+                        f"font-size:{APP_FONT['section']}px; font-weight:bold; border:none;"
                     )
                 else:
                     lbl_hhi.setText("暂无持仓")
@@ -2160,8 +2297,55 @@ class MainWindow(QMainWindow):
         self._worker_scan.error.connect(lambda e: self._on_scan_error(str(e)))
         self._worker_scan.start()
 
+    def _on_multi_scan(self):
+        strategy_ids = self.screening.prompt_multi_strategy_selection()
+        if not strategy_ids:
+            return
+
+        sample = self.screening.spin_sample.value()
+        rs_min = self.screening.spin_rs.value()
+        strategy_labels = []
+        for sid in strategy_ids:
+            for i in range(self.screening.combo_strategy.count()):
+                if self.screening.combo_strategy.itemData(i) == sid:
+                    strategy_labels.append(self.screening.combo_strategy.itemText(i))
+                    break
+
+        preview = " / ".join(strategy_labels[:3]) if strategy_labels else "多策略"
+        if len(strategy_labels) > 3:
+            preview += f" 等{len(strategy_labels)}个策略"
+
+        log_system_event(
+            "ui",
+            "scan",
+            "手动触发多策略扫描",
+            detail=f"strategies={','.join(strategy_ids)}, sample={sample}, rs_min={rs_min}",
+        )
+        self.screening.progress.setVisible(True)
+        self.screening.status_label.setText("多策略聚合扫描中...")
+        self.status.showMessage(f"多策略扫描中（{preview}）...")
+
+        def _do_local_multi_scan():
+            return run_task(
+                "UI多策略扫描",
+                "desktop_ui",
+                self._run_local_scan_bundle,
+                strategy_ids,
+                sample,
+                rs_min,
+            )
+
+        self._worker_scan = Worker(_do_local_multi_scan)
+        self._worker_scan.finished.connect(self._on_scan_done)
+        self._worker_scan.error.connect(lambda e: self._on_scan_error(str(e)))
+        self._worker_scan.start()
+
     def _run_local_scan(self, strategy_id: str, sample: int, rs_min: int) -> list[dict]:
-        """基于本地 SQLite 日线数据的多策略选股扫描。"""
+        payload = self._run_local_scan_bundle([strategy_id], sample, rs_min)
+        return payload.get("candidates", [])
+
+    def _run_local_scan_bundle(self, strategy_ids: list[str], sample: int, rs_min: int) -> dict:
+        """基于本地 SQLite 日线数据做单/多策略聚合扫描。"""
         import numpy as np
         from desktop.strategy_engine import build_context, score_candidate
 
@@ -2191,7 +2375,8 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
-        candidates = []
+        aggregated: dict[str, dict] = {}
+        per_strategy_rows: dict[str, list[dict]] = {}
         for code in code_list:
             cur2 = conn.execute(
                 "SELECT close, high, low, volume FROM daily_kline WHERE code=? ORDER BY date DESC LIMIT 260",
@@ -2211,64 +2396,143 @@ class MainWindow(QMainWindow):
                 continue
 
             ctx = build_context(code, closes, highs, lows, vols)
-            scored = score_candidate(strategy_id, ctx)
-            score = scored["score"]
-            signals = scored["signals"]
-            signal_str = scored["signal_str"]
-            rs = scored["rs"]
-            vcp = scored["vcp"]
-            breakout = scored["breakout"]
-            contraction = scored["contraction"]
-            vol_ratio = scored["vol_ratio"]
-            dist_high = scored["dist_high"]
+            for strategy_id in strategy_ids:
+                scored = score_candidate(strategy_id, ctx)
+                score = int(scored["score"])
+                rs = int(scored["rs"])
+                vcp = bool(scored["vcp"])
+                breakout = bool(scored["breakout"])
+                contraction = scored["contraction"]
+                vol_ratio = scored["vol_ratio"]
+                dist_high = scored["dist_high"]
 
-            if rs < rs_min:
-                continue
+                if rs < rs_min:
+                    continue
 
-            buy_advice = scored["buy_advice"]
-            action_advice = scored["action_advice"]
+                row = {
+                    "代码": code,
+                    "名称": names.get(code, ""),
+                    "板块": board_map.get(code, ""),
+                    "策略": scored["strategy"],
+                    "价格": f"{price:.2f}",
+                    "RS": str(rs),
+                    "评分": str(score),
+                    "VCP": "✓" if vcp else "",
+                    "突破": "✓" if breakout else "",
+                    "收缩": f"{contraction:.2f}" if contraction else "",
+                    "量比": f"{vol_ratio:.1f}",
+                    "离高点%": f"{dist_high:+.1f}%",
+                    "建议买入": scored["buy_advice"],
+                    "建议操作": scored["action_advice"],
+                }
+                hit_label = str(scored["strategy"] or strategy_id)
+                row["命中数"] = 1
+                row["命中策略"] = hit_label
+                row["共振"] = ""
+                per_strategy_rows.setdefault(hit_label, []).append(dict(row))
 
-            candidates.append({
-                "代码": code,
-                "名称": names.get(code, ""),
-                "板块": board_map.get(code, ""),
-                "策略": scored["strategy"],
-                "价格": f"{price:.2f}",
-                "RS": str(rs),
-                "评分": str(score),
-                "VCP": "✓" if vcp else "",
-                "突破": "✓" if breakout else "",
-                "收缩": f"{contraction:.2f}" if contraction else "",
-                "量比": f"{vol_ratio:.1f}",
-                "离高点%": f"{dist_high:+.1f}%",
-                "建议买入": buy_advice,
-                "建议操作": action_advice,
-            })
+                current = aggregated.get(code)
+                if current is None:
+                    row["_score_num"] = score
+                    row["_rs_num"] = rs
+                    row["_breakout_num"] = 1 if breakout else 0
+                    row["_strategy_hits"] = [hit_label]
+                    aggregated[code] = row
+                    continue
+
+                if hit_label not in current["_strategy_hits"]:
+                    current["_strategy_hits"].append(hit_label)
+
+                replace = (
+                    score > current["_score_num"]
+                    or (score == current["_score_num"] and (1 if breakout else 0) > current["_breakout_num"])
+                    or (score == current["_score_num"] and rs > current["_rs_num"])
+                )
+                current["_breakout_num"] = max(current["_breakout_num"], 1 if breakout else 0)
+                current["_score_num"] = max(current["_score_num"], score)
+                current["_rs_num"] = max(current["_rs_num"], rs)
+                if replace:
+                    keep_hits = list(current["_strategy_hits"])
+                    current.update(row)
+                    current["_strategy_hits"] = keep_hits
+                    current["_score_num"] = max(current["_score_num"], score)
+                    current["_rs_num"] = max(current["_rs_num"], rs)
+                    current["_breakout_num"] = max(current["_breakout_num"], 1 if breakout else 0)
 
         conn.close()
-        candidates.sort(key=lambda x: int(x.get("评分", "0")), reverse=True)
-        return candidates[:100]
+        candidates = list(aggregated.values())
+        overlap_codes = set()
+        for row in candidates:
+            hits = row.pop("_strategy_hits", [])
+            score_num = row.pop("_score_num", 0)
+            rs_num = row.pop("_rs_num", 0)
+            breakout_num = row.pop("_breakout_num", 0)
+            row["命中数"] = len(hits) if hits else 1
+            row["命中策略"] = " / ".join(hits) if hits else row.get("策略", "")
+            row["共振"] = "🔥 共振" if row["命中数"] > 1 else ""
+            if row["命中数"] > 1:
+                overlap_codes.add(str(row.get("代码", "")))
+            row["_sort_key"] = (row["命中数"], breakout_num, score_num, rs_num)
+
+        candidates.sort(key=lambda x: x.get("_sort_key", (0, 0, 0, 0)), reverse=True)
+        for row in candidates:
+            row.pop("_sort_key", None)
+
+        for label, rows in per_strategy_rows.items():
+            rows.sort(
+                key=lambda x: (
+                    1 if str(x.get("代码", "")) in overlap_codes else 0,
+                    int(x.get("评分", "0") or 0),
+                    int(x.get("RS", "0") or 0),
+                ),
+                reverse=True,
+            )
+            for row in rows:
+                if str(row.get("代码", "")) in overlap_codes:
+                    row["共振"] = "🔥 共振"
+
+        return {
+            "candidates": candidates[:100],
+            "multi_strategy": len(strategy_ids) > 1,
+            "strategy_ids": strategy_ids,
+            "overlap_count": sum(1 for row in candidates if int(row.get("命中数", 1) or 1) > 1),
+            "per_strategy": per_strategy_rows,
+        }
 
     def _on_scan_done(self, candidates):
+        payload = candidates if isinstance(candidates, dict) else {"candidates": candidates or []}
+        rows = payload.get("candidates", []) or []
+        is_multi = bool(payload.get("multi_strategy"))
+        overlap_count = int(payload.get("overlap_count", 0) or 0)
+        strategy_ids = payload.get("strategy_ids", []) or []
+        per_strategy = payload.get("per_strategy", {}) or {}
+
         self.screening.progress.setVisible(False)
-        self.screening.populate_results(candidates or [])
-        n = len(candidates) if candidates else 0
+        self.screening.populate_results(rows, per_strategy=per_strategy if is_multi else {})
+        n = len(rows)
         log_system_event(
             "ui",
             "scan",
             "扫描完成",
-            detail=f"candidates={n}",
+            detail=f"candidates={n}, multi={is_multi}, overlap={overlap_count}",
         )
-        self.screening.status_label.setText(f"扫描完成，{n} 只候选")
-        self.status.showMessage(f"选股完成: {n} 只候选")
+        if is_multi:
+            self.screening.status_label.setText(f"多策略扫描完成，{n} 只候选，重复命中 {overlap_count} 只")
+            self.status.showMessage(f"多策略扫描完成: {n} 只候选，重复命中 {overlap_count} 只")
+        else:
+            self.screening.status_label.setText(f"扫描完成，{n} 只候选")
+            self.status.showMessage(f"选股完成: {n} 只候选")
         # 缓存扫描结果供 AI 仓使用
-        if candidates:
-            self._save_scan_results(candidates)
+        if rows:
+            self._save_scan_results(rows)
             # 自动记录强烈买入信号到走势验证
             try:
                 from desktop.trend_verify import record_signals
-                sid = self.screening.combo_strategy.currentData() or "SEPA"
-                n_recorded = record_signals(candidates, strategy=sid.upper())
+                if is_multi:
+                    strategy_tag = "MULTI_" + "_".join(str(s).upper() for s in strategy_ids[:6])
+                else:
+                    strategy_tag = str(self.screening.combo_strategy.currentData() or "SEPA").upper()
+                n_recorded = record_signals(rows, strategy=strategy_tag)
                 if n_recorded > 0:
                     self.status.showMessage(
                         f"选股完成: {n} 只候选，{n_recorded} 个强烈信号已记录到走势验证"
@@ -2679,7 +2943,7 @@ class MainWindow(QMainWindow):
                             pass
                     if j == 9 and avg_rank <= 1.5:
                         item.setForeground(gold)
-                        item.setFont(QFont("", 11, QFont.Weight.Bold))
+                        item.setFont(QFont("", APP_FONT["caption"], QFont.Weight.Bold))
                     self.backtest.compare_table.setItem(i, j, item)
 
             summary = results.get("_summary", "对比完成")
@@ -3382,22 +3646,65 @@ class MainWindow(QMainWindow):
                 self._navigate_to_stock(code)
 
     # ---- 走势验证 ----
+    def _refresh_trend_verify_panel(self):
+        from core.application.trend_verify_service import (
+            get_trend_failure_summary,
+            get_trend_verify_records,
+            get_trend_verify_stats,
+        )
+
+        records = get_trend_verify_records(limit=200)
+        stats = get_trend_verify_stats()
+        summary = get_trend_failure_summary()
+        self.trend_verify.update_records(records)
+        self.trend_verify.update_stats(stats)
+        self.trend_verify.update_failure_summary(summary)
+        return records, stats, summary
+
     def _on_trend_calibrate(self):
         """校准走势验证记录。"""
         self.status.showMessage("走势验证：校准中...")
         try:
-            from desktop.trend_verify import calibrate, get_records, get_accuracy_stats
+            from desktop.trend_verify import calibrate
             result = calibrate()
-            records = get_records(200)
-            stats = get_accuracy_stats()
-            self.trend_verify.update_records(records)
-            self.trend_verify.update_stats(stats)
+            _, stats, _ = self._refresh_trend_verify_panel()
             self.status.showMessage(
                 f"校准完成：更新 {result['updated']} 条，"
                 f"准确率 {stats.get('accuracy', 0):.1f}%（共 {stats.get('total', 0)} 个信号）"
             )
         except Exception as e:
             self.status.showMessage(f"校准失败: {e}")
+
+    def _on_trend_batch_failure(self):
+        """批量分析失败信号并刷新汇总。"""
+        self.status.showMessage("走势验证：批量失败归因中...")
+        self.trend_verify.btn_batch_failure.setEnabled(False)
+
+        from desktop.workers import Worker
+
+        def _do():
+            from desktop.trend_verify import batch_analyze_failures
+
+            result = batch_analyze_failures()
+            return {"result": result}
+
+        def _done(payload):
+            self.trend_verify.btn_batch_failure.setEnabled(True)
+            self._refresh_trend_verify_panel()
+            result = payload.get("result", {})
+            self.status.showMessage(
+                f"失败归因完成：更新 {result.get('updated', 0)} / {result.get('total', 0)} 条失败信号"
+            )
+
+        def _err(msg):
+            self.trend_verify.btn_batch_failure.setEnabled(True)
+            self.status.showMessage(f"批量失败归因失败: {msg}")
+
+        w = Worker(_do)
+        w.finished.connect(_done)
+        w.error.connect(_err)
+        w.start()
+        self._trend_failure_worker = w
 
     def _on_trend_ai_analyze(self):
         """AI 深度分析选中的走势验证行。"""
@@ -3481,6 +3788,13 @@ class MainWindow(QMainWindow):
 
         def _done(result):
             self.trend_verify.btn_ai_analyze.setEnabled(True)
+            try:
+                from desktop.trend_verify import update_record_analysis
+
+                update_record_analysis(int(r.get("id", 0) or 0), str(result))
+                self._refresh_trend_verify_panel()
+            except Exception:
+                pass
             lines = [f"🦀 AI 深度分析 — {code} {name}\n"]
             lines.append(result)
             self.trend_verify.detail_text.setText("\n".join(lines))
@@ -3641,7 +3955,12 @@ class MainWindow(QMainWindow):
             provider = self.settings.ai_provider.currentText()
             key = self.settings.ai_key.text().strip()
             base_url = self.settings.ai_base_url.text().strip()
+            model = self.settings.ai_model.currentText().strip() or self._default_model_for_provider(provider)
             if not key:
+                self.settings.ai_status.setText("❌ 请先填写 API Key")
+                self.settings.ai_status.setStyleSheet(
+                    f"color:#ef5350; font-size:{APP_FONT['caption']}px;"
+                )
                 self.status.showMessage("请输入 API Key")
                 return
             _PROVIDER_URLS = {
@@ -3658,7 +3977,7 @@ class MainWindow(QMainWindow):
                 "INSERT OR REPLACE INTO kv_store VALUES (?,?,datetime('now'))",
                 ("ai_config", json.dumps({
                     "api_key": key, "base_url": base_url,
-                    "model": "", "provider": provider,
+                    "model": model, "provider": provider,
                 })),
             )
             conn.commit()
@@ -3667,10 +3986,280 @@ class MainWindow(QMainWindow):
             # Sync to AI仓 panel
             self.ai_portfolio.api_key_input.setText(key)
             self.ai_portfolio.base_url_input.setText(base_url)
+            self.ai_portfolio.model_combo.setCurrentText(model)
 
-            self.status.showMessage(f"✅ AI 配置已保存 ({provider})")
+            self.settings.ai_status.setText(f"✅ 已保存: {provider} / {model}")
+            self.settings.ai_status.setStyleSheet(
+                f"color:#66bb6a; font-size:{APP_FONT['caption']}px;"
+            )
+            self._refresh_ai_model_summary(provider=provider, model=model)
+
+            self.status.showMessage(f"✅ AI 配置已保存 ({provider} / {model})")
         except Exception as e:
+            self.settings.ai_status.setText(f"❌ 保存失败: {e}")
+            self.settings.ai_status.setStyleSheet(
+                f"color:#ef5350; font-size:{APP_FONT['caption']}px;"
+            )
             self.status.showMessage(f"保存失败: {e}")
+
+    def _apply_coordinator_policy_to_settings(self, cfg: dict):
+        self.settings.coord_observe_blocked_ratio.setValue(int(float(cfg.get("observe_blocked_ratio", 0.7)) * 100))
+        self.settings.coord_sell_only_sentiment.setValue(int(float(cfg.get("sell_only_sentiment_ratio", 0.25)) * 100))
+        self.settings.coord_limit_buy_sentiment.setValue(int(float(cfg.get("limit_buy_sentiment_ratio", 0.35)) * 100))
+        self.settings.coord_limit_buy_max_count.setValue(int(cfg.get("limit_buy_max_count", 1)))
+        self.settings.coord_learning_min_samples.setValue(int(cfg.get("learning_min_samples", 3)))
+        note = str(cfg.get("last_learning_note", "") or "-")
+        updated = str(cfg.get("updated_at", "") or "")
+        self.settings.coord_policy_note.setText(f"最近调参：{note}" + (f" | 更新时间: {updated[:19]}" if updated else ""))
+
+    def _load_coordinator_policy_to_settings(self):
+        try:
+            from desktop.agents import get_coordinator_policy_config
+
+            cfg = get_coordinator_policy_config()
+            self._apply_coordinator_policy_to_settings(cfg)
+            self.settings.coord_policy_status.setText("✅ Coordinator 策略参数已加载")
+            self.settings.coord_policy_status.setStyleSheet(f"color:#66bb6a; font-size:{APP_FONT['caption']}px;")
+        except Exception as e:
+            self.settings.coord_policy_status.setText(f"❌ 参数加载失败: {e}")
+            self.settings.coord_policy_status.setStyleSheet(f"color:#ef5350; font-size:{APP_FONT['caption']}px;")
+
+    def _collect_coordinator_policy_from_settings(self) -> dict:
+        return {
+            "observe_blocked_ratio": self.settings.coord_observe_blocked_ratio.value() / 100,
+            "sell_only_sentiment_ratio": self.settings.coord_sell_only_sentiment.value() / 100,
+            "limit_buy_sentiment_ratio": self.settings.coord_limit_buy_sentiment.value() / 100,
+            "limit_buy_max_count": self.settings.coord_limit_buy_max_count.value(),
+            "learning_min_samples": self.settings.coord_learning_min_samples.value(),
+            "last_learning_note": "用户手动保存策略参数",
+        }
+
+    def _on_save_coordinator_policy(self):
+        try:
+            from core.application.openclaw_service import update_coordinator_policy
+
+            cfg = update_coordinator_policy(self._collect_coordinator_policy_from_settings())
+            self._apply_coordinator_policy_to_settings(cfg)
+            self.settings.coord_policy_status.setText("✅ Coordinator 策略参数已保存")
+            self.settings.coord_policy_status.setStyleSheet(f"color:#66bb6a; font-size:{APP_FONT['caption']}px;")
+            self.status.showMessage("✅ Coordinator 策略参数已保存")
+        except Exception as e:
+            self.settings.coord_policy_status.setText(f"❌ 保存失败: {e}")
+            self.settings.coord_policy_status.setStyleSheet(f"color:#ef5350; font-size:{APP_FONT['caption']}px;")
+
+    def _on_reset_coordinator_policy(self):
+        try:
+            from core.application.openclaw_service import reset_coordinator_policy
+
+            cfg = reset_coordinator_policy()
+            self._apply_coordinator_policy_to_settings(cfg)
+            self.settings.coord_policy_status.setText("✅ 已恢复默认 Coordinator 策略参数")
+            self.settings.coord_policy_status.setStyleSheet(f"color:#66bb6a; font-size:{APP_FONT['caption']}px;")
+            self.status.showMessage("✅ 已恢复默认 Coordinator 策略参数")
+        except Exception as e:
+            self.settings.coord_policy_status.setText(f"❌ 恢复失败: {e}")
+            self.settings.coord_policy_status.setStyleSheet(f"color:#ef5350; font-size:{APP_FONT['caption']}px;")
+
+    def _apply_unattended_trade_guard_to_settings(self, payload: dict):
+        cfg = payload.get("config", payload) if isinstance(payload, dict) else {}
+        usage = payload.get("usage", {}) if isinstance(payload, dict) else {}
+        simulation = payload.get("simulation", {}) if isinstance(payload, dict) else {}
+        self.settings.trade_guard_enabled.setChecked(bool(cfg.get("enabled", True)))
+        self.settings.trade_guard_buy_enabled.setChecked(bool(cfg.get("unattended_buy_enabled", False)))
+        self.settings.trade_guard_sell_enabled.setChecked(bool(cfg.get("allow_sell_when_buy_disabled", True)))
+        self.settings.trade_guard_daily_amount.setValue(int(float(cfg.get("max_daily_buy_amount", 50000) or 0)))
+        self.settings.trade_guard_single_amount.setValue(int(float(cfg.get("max_single_buy_amount", 20000) or 0)))
+        self.settings.trade_guard_daily_count.setValue(int(cfg.get("max_daily_buy_count", 3) or 0))
+        self.settings.trade_guard_batch_amount.setValue(int(float(cfg.get("max_batch_buy_amount", 30000) or 0)))
+        self.settings.trade_guard_batch_count.setValue(int(cfg.get("max_batch_buy_count", 2) or 0))
+        self.settings.trade_guard_symbol_daily_count.setValue(int(cfg.get("max_symbol_daily_buy_count", 1) or 0))
+        self.settings.trade_guard_sector_daily_amount.setValue(
+            int(float(cfg.get("max_sector_daily_buy_amount", 30000) or 0))
+        )
+        self.settings.trade_guard_sector_daily_count.setValue(int(cfg.get("max_sector_daily_buy_count", 2) or 0))
+        self.settings.trade_guard_cooldown_minutes.setValue(int(cfg.get("buy_cooldown_minutes", 30) or 0))
+        self.settings.trade_guard_sim_required.setChecked(bool(cfg.get("require_simulation_pass", True)))
+        self.settings.trade_guard_sim_runs.setValue(int(cfg.get("simulation_min_success_runs", 3) or 3))
+        self.settings.trade_guard_blacklist.setText(",".join(cfg.get("blacklist", []) or []))
+        self.settings.trade_guard_whitelist.setText(",".join(cfg.get("whitelist", []) or []))
+        self.settings.trade_guard_usage.setText(
+            "今日用量："
+            f"{usage.get('date', '-')} | 买入次数 {usage.get('buy_count', 0)} | "
+            f"买入金额 {float(usage.get('buy_amount', 0) or 0):.2f} | "
+            f"个股 {len(usage.get('symbols', {}) or {})} | 板块 {len(usage.get('sectors', {}) or {})}"
+        )
+        sim_passed = bool(simulation.get("passed", False))
+        self.settings.trade_guard_sim_status.setText(
+            "仿真门禁："
+            f"{'已通过' if sim_passed else '未通过'} | "
+            f"连续成功 {simulation.get('consecutive_success_runs', 0)}/"
+            f"{simulation.get('required_success_runs', cfg.get('simulation_min_success_runs', 3))} | "
+            f"最近状态 {simulation.get('last_status', '-')}"
+            + (f" | {simulation.get('reset_reason')}" if simulation.get("reset_reason") else "")
+        )
+        self.settings.trade_guard_sim_status.setStyleSheet(
+            f"color:{'#66bb6a' if sim_passed else '#ffb74d'}; font-size:{APP_FONT['caption']}px;"
+        )
+
+    def _load_unattended_trade_guard_to_settings(self):
+        try:
+            from core.application.openclaw_service import get_unattended_trade_guard
+
+            payload = get_unattended_trade_guard()
+            self._apply_unattended_trade_guard_to_settings(payload)
+            self.settings.trade_guard_status.setText("✅ 无人值守交易安全闸已加载")
+            self.settings.trade_guard_status.setStyleSheet(f"color:#66bb6a; font-size:{APP_FONT['caption']}px;")
+        except Exception as e:
+            self.settings.trade_guard_status.setText(f"❌ 安全闸加载失败: {e}")
+            self.settings.trade_guard_status.setStyleSheet(f"color:#ef5350; font-size:{APP_FONT['caption']}px;")
+
+    def _collect_unattended_trade_guard_from_settings(self) -> dict:
+        return {
+            "enabled": self.settings.trade_guard_enabled.isChecked(),
+            "unattended_buy_enabled": self.settings.trade_guard_buy_enabled.isChecked(),
+            "allow_sell_when_buy_disabled": self.settings.trade_guard_sell_enabled.isChecked(),
+            "max_daily_buy_amount": float(self.settings.trade_guard_daily_amount.value()),
+            "max_single_buy_amount": float(self.settings.trade_guard_single_amount.value()),
+            "max_daily_buy_count": self.settings.trade_guard_daily_count.value(),
+            "max_batch_buy_amount": float(self.settings.trade_guard_batch_amount.value()),
+            "max_batch_buy_count": self.settings.trade_guard_batch_count.value(),
+            "max_symbol_daily_buy_count": self.settings.trade_guard_symbol_daily_count.value(),
+            "max_sector_daily_buy_amount": float(self.settings.trade_guard_sector_daily_amount.value()),
+            "max_sector_daily_buy_count": self.settings.trade_guard_sector_daily_count.value(),
+            "buy_cooldown_minutes": self.settings.trade_guard_cooldown_minutes.value(),
+            "require_simulation_pass": self.settings.trade_guard_sim_required.isChecked(),
+            "simulation_min_success_runs": self.settings.trade_guard_sim_runs.value(),
+            "blacklist": self.settings.trade_guard_blacklist.text().strip(),
+            "whitelist": self.settings.trade_guard_whitelist.text().strip(),
+        }
+
+    def _on_save_unattended_trade_guard(self):
+        try:
+            from core.application.openclaw_service import update_unattended_trade_guard
+
+            payload = update_unattended_trade_guard(self._collect_unattended_trade_guard_from_settings())
+            self._apply_unattended_trade_guard_to_settings(payload)
+            self.settings.trade_guard_status.setText("✅ 无人值守交易安全闸已保存")
+            self.settings.trade_guard_status.setStyleSheet(f"color:#66bb6a; font-size:{APP_FONT['caption']}px;")
+            self.status.showMessage("✅ 无人值守交易安全闸已保存")
+        except Exception as e:
+            self.settings.trade_guard_status.setText(f"❌ 保存失败: {e}")
+            self.settings.trade_guard_status.setStyleSheet(f"color:#ef5350; font-size:{APP_FONT['caption']}px;")
+
+    def _on_reset_unattended_trade_guard(self):
+        try:
+            from core.application.openclaw_service import reset_unattended_trade_guard
+
+            payload = reset_unattended_trade_guard()
+            self._apply_unattended_trade_guard_to_settings(payload)
+            self.settings.trade_guard_status.setText("✅ 已恢复默认安全闸（无人值守买入关闭）")
+            self.settings.trade_guard_status.setStyleSheet(f"color:#66bb6a; font-size:{APP_FONT['caption']}px;")
+            self.status.showMessage("✅ 已恢复默认安全闸")
+        except Exception as e:
+            self.settings.trade_guard_status.setText(f"❌ 恢复失败: {e}")
+            self.settings.trade_guard_status.setStyleSheet(f"color:#ef5350; font-size:{APP_FONT['caption']}px;")
+
+    def _apply_openclaw_alert_policy_to_settings(self, payload: dict):
+        cfg = payload or {}
+        self.settings.openclaw_alert_enabled.setChecked(bool(cfg.get("enabled", True)))
+        self.settings.openclaw_alert_suppress_seconds.setValue(int(cfg.get("suppress_seconds", 1800) or 0))
+        self.settings.openclaw_alert_escalate_after.setValue(int(cfg.get("escalate_after", 3) or 3))
+        self.settings.openclaw_alert_policy_status.setText(
+            "告警策略："
+            f"{'启用' if cfg.get('enabled', True) else '停用'} | "
+            f"静默 {int(cfg.get('suppress_seconds', 1800) or 0)} 秒 | "
+            f"连续失败 {int(cfg.get('escalate_after', 3) or 3)} 次升级"
+        )
+        self.settings.openclaw_alert_policy_status.setStyleSheet(
+            f"color:#4fc3f7; font-size:{APP_FONT['caption']}px;"
+        )
+
+    def _load_openclaw_alert_policy_to_settings(self):
+        try:
+            from core.application.openclaw_service import get_openclaw_daemon_alert_policy
+
+            self._apply_openclaw_alert_policy_to_settings(get_openclaw_daemon_alert_policy())
+        except Exception as e:
+            self.settings.openclaw_alert_policy_status.setText(f"❌ 告警策略加载失败: {e}")
+            self.settings.openclaw_alert_policy_status.setStyleSheet(f"color:#ef5350; font-size:{APP_FONT['caption']}px;")
+
+    def _apply_auth_security_to_settings(self, payload: dict):
+        status = str((payload or {}).get("status", "-") or "-")
+        summary = str((payload or {}).get("summary", "") or "")
+        default_password = bool((payload or {}).get("default_admin_password", False))
+        findings = list((payload or {}).get("findings", []) or [])
+        color = "#66bb6a" if status == "ready" else "#ef5350" if status == "error" else "#ffb74d"
+        self.settings.security_status.setText(
+            f"安全自检：{status} | {summary or '-'} | "
+            f"默认密码 {'未修改' if default_password else '已修改'} | 风险 {len(findings)} 项"
+        )
+        self.settings.security_status.setStyleSheet(f"color:{color}; font-size:{APP_FONT['caption']}px;")
+        roles = (payload or {}).get("role_counts", {}) or {}
+        self.settings.security_roles.setText(
+            "角色分布："
+            f"admin {int(roles.get('admin', 0) or 0)} | "
+            f"operator {int(roles.get('operator', 0) or 0)} | "
+            f"viewer {int(roles.get('viewer', 0) or 0)}"
+        )
+        tokens = (payload or {}).get("tokens", {}) or {}
+        self.settings.security_tokens.setText(
+            "Token："
+            f"有效 {int(tokens.get('active', 0) or 0)} | "
+            f"过期 {int(tokens.get('expired', 0) or 0)} | "
+            f"异常 {int(tokens.get('invalid', 0) or 0)}"
+        )
+
+    def _load_auth_security_to_settings(self):
+        try:
+            from api_server.auth import get_auth_security_status
+
+            self._apply_auth_security_to_settings(get_auth_security_status())
+            self.status.showMessage("✅ API 生产安全自检已刷新")
+        except Exception as e:
+            self.settings.security_status.setText(f"❌ 安全自检失败: {e}")
+            self.settings.security_status.setStyleSheet(f"color:#ef5350; font-size:{APP_FONT['caption']}px;")
+
+    def _on_cleanup_expired_tokens(self):
+        try:
+            from api_server.auth import cleanup_expired_tokens
+
+            result = cleanup_expired_tokens(actor="desktop")
+            self.status.showMessage(f"✅ 已清理 {result.get('deleted', 0)} 个过期/异常 Token")
+            self._load_auth_security_to_settings()
+        except Exception as e:
+            self.settings.security_status.setText(f"❌ Token 清理失败: {e}")
+            self.settings.security_status.setStyleSheet(f"color:#ef5350; font-size:{APP_FONT['caption']}px;")
+
+    def _collect_openclaw_alert_policy_from_settings(self) -> dict:
+        return {
+            "enabled": self.settings.openclaw_alert_enabled.isChecked(),
+            "suppress_seconds": self.settings.openclaw_alert_suppress_seconds.value(),
+            "escalate_after": self.settings.openclaw_alert_escalate_after.value(),
+        }
+
+    def _on_save_openclaw_alert_policy(self):
+        try:
+            from core.application.openclaw_service import update_openclaw_daemon_alert_policy
+
+            payload = update_openclaw_daemon_alert_policy(self._collect_openclaw_alert_policy_from_settings())
+            self._apply_openclaw_alert_policy_to_settings(payload)
+            self.settings.openclaw_alert_policy_status.setText("✅ OpenClaw 后台告警策略已保存")
+            self.settings.openclaw_alert_policy_status.setStyleSheet(f"color:#66bb6a; font-size:{APP_FONT['caption']}px;")
+        except Exception as e:
+            self.settings.openclaw_alert_policy_status.setText(f"❌ 告警策略保存失败: {e}")
+            self.settings.openclaw_alert_policy_status.setStyleSheet(f"color:#ef5350; font-size:{APP_FONT['caption']}px;")
+
+    def _on_reset_openclaw_alert_policy(self):
+        try:
+            from core.application.openclaw_service import reset_openclaw_daemon_alert_policy
+
+            payload = reset_openclaw_daemon_alert_policy()
+            self._apply_openclaw_alert_policy_to_settings(payload)
+            self.settings.openclaw_alert_policy_status.setText("✅ 已恢复默认 OpenClaw 后台告警策略")
+            self.settings.openclaw_alert_policy_status.setStyleSheet(f"color:#66bb6a; font-size:{APP_FONT['caption']}px;")
+        except Exception as e:
+            self.settings.openclaw_alert_policy_status.setText(f"❌ 告警策略恢复失败: {e}")
+            self.settings.openclaw_alert_policy_status.setStyleSheet(f"color:#ef5350; font-size:{APP_FONT['caption']}px;")
 
     def _on_save_push(self):
         """保存推送配置（Server 酱 + 企业微信）。"""
@@ -3782,16 +4371,43 @@ class MainWindow(QMainWindow):
     def _on_save_sched_config(self):
         """保存调度配置（启用/禁用的任务 + OpenClaw key）。"""
         import json
+        import re
         disabled = set()
         for key, cb in self.settings.sched_checks.items():
             if not cb.isChecked():
                 disabled.add(key)
+        openclaw_time = self.settings.openclaw_daemon_time.text().strip() or "10:25"
+        if not re.match(r"^([01]\d|2[0-3]):[0-5]\d$", openclaw_time):
+            openclaw_time = "10:25"
+        openclaw_boards = [
+            item.strip()
+            for item in re.split(r"[,，\s]+", self.settings.openclaw_daemon_boards.text().strip())
+            if item.strip()
+        ] or ["人工智能", "芯片", "量子科技"]
 
         try:
             conn = self._get_db()
+            row_time = conn.execute(
+                "SELECT value FROM kv_store WHERE key='sched_time_overrides'"
+            ).fetchone()
+            overrides = {}
+            if row_time:
+                try:
+                    overrides = json.loads(row_time[0])
+                except Exception:
+                    overrides = {}
+            overrides["openclaw_pipeline"] = openclaw_time
             conn.execute(
                 "INSERT OR REPLACE INTO kv_store VALUES (?,?,datetime('now'))",
                 ("sched_disabled_tasks", json.dumps(list(disabled))),
+            )
+            conn.execute(
+                "INSERT OR REPLACE INTO kv_store VALUES (?,?,datetime('now'))",
+                ("sched_time_overrides", json.dumps(overrides, ensure_ascii=False)),
+            )
+            conn.execute(
+                "INSERT OR REPLACE INTO kv_store VALUES (?,?,datetime('now'))",
+                ("openclaw_daemon_boards", json.dumps(openclaw_boards, ensure_ascii=False)),
             )
             # Save OpenClaw key if provided
             oc_key = self.settings.openclaw_key.text().strip()
@@ -3806,18 +4422,42 @@ class MainWindow(QMainWindow):
         # Update running daemon
         if self._daemon:
             self._daemon.disabled_tasks = disabled
+            self._daemon.boards = openclaw_boards
+            self._daemon._time_overrides["openclaw_pipeline"] = openclaw_time
+        self.settings.set_schedule_time("openclaw_pipeline", openclaw_time)
 
         self.settings.sched_status.setText(
-            f"✅ 调度配置已保存（{len(disabled)} 个任务禁用）"
+            f"✅ 调度配置已保存（OpenClaw {openclaw_time}，板块{len(openclaw_boards)}个，{len(disabled)} 个任务禁用）"
         )
-        self.settings.sched_status.setStyleSheet("color:#66bb6a; font-size:12px;")
+        self.settings.sched_status.setStyleSheet(
+            f"color:#66bb6a; font-size:{APP_FONT['body']}px;"
+        )
         self.status.showMessage("调度配置已保存")
+
+    def _apply_openclaw_daemon_last_run_label(self, payload: dict):
+        data = payload or {}
+        ts = str(data.get("timestamp", "") or "-")
+        status = str(data.get("status", "") or "unknown")
+        summary = str(data.get("summary", "") or "-")
+        plan = data.get("execution_plan", {}) or {}
+        mode = plan.get("mode", "-") if isinstance(plan, dict) else "-"
+        blocked = plan.get("blocked_count", 0) if isinstance(plan, dict) else 0
+        status_text = {"success": "成功", "warning": "告警", "error": "失败"}.get(status, status)
+        self.settings.openclaw_daemon_last_run.setText(
+            f"上次后台执行：{status_text} | {ts} | {summary} | mode={mode} | 分流拦截={blocked}"
+        )
+        color = "#66bb6a" if status == "success" else "#ffb74d" if status == "warning" else "#ef5350"
+        self.settings.openclaw_daemon_last_run.setStyleSheet(
+            f"color:{color}; font-size:{APP_FONT['caption']}px;"
+        )
 
     def _on_run_pipeline_now(self):
         """立即执行全策略流水线。"""
         self.settings.btn_run_pipeline_now.setEnabled(False)
         self.settings.sched_status.setText("⏳ 全流水线执行中...")
-        self.settings.sched_status.setStyleSheet("color:#ffb74d; font-size:12px;")
+        self.settings.sched_status.setStyleSheet(
+            f"color:#ffb74d; font-size:{APP_FONT['body']}px;"
+        )
         self.status.showMessage("正在执行全策略流水线...")
 
         from desktop.workers import Worker
@@ -3839,21 +4479,97 @@ class MainWindow(QMainWindow):
             self.settings.sched_status.setText(
                 f"✅ 流水线完成: {ok_count} 成功, {fail_count} 失败"
             )
-            self.settings.sched_status.setStyleSheet("color:#66bb6a; font-size:12px;")
+            self.settings.sched_status.setStyleSheet(
+                f"color:#66bb6a; font-size:{APP_FONT['body']}px;"
+            )
             self.status.showMessage(f"全策略流水线完成")
+            try:
+                import json
+                conn = self._get_db()
+                row = conn.execute(
+                    "SELECT value FROM kv_store WHERE key='openclaw_last_daemon_run'"
+                ).fetchone()
+                conn.close()
+                if row:
+                    self._apply_openclaw_daemon_last_run_label(json.loads(row[0]))
+            except Exception:
+                pass
             self._load_dashboard()
             self._refresh_ai_portfolio()
 
         def _err(msg):
             self.settings.btn_run_pipeline_now.setEnabled(True)
             self.settings.sched_status.setText(f"❌ 流水线失败: {msg}")
-            self.settings.sched_status.setStyleSheet("color:#ef5350; font-size:12px;")
+            self.settings.sched_status.setStyleSheet(
+                f"color:#ef5350; font-size:{APP_FONT['body']}px;"
+            )
 
         w = Worker(_do)
         w.finished.connect(_done)
         w.error.connect(_err)
         w.start()
         self._pipeline_worker = w
+
+    def _on_test_openclaw_daemon(self):
+        """立即执行后台 OpenClaw 单项任务，用于验证无人值守链路。"""
+        self.settings.btn_test_openclaw_daemon.setEnabled(False)
+        self.settings.openclaw_daemon_test_status.setText("⏳ 后台 OpenClaw 测试中...")
+        self.settings.openclaw_daemon_test_status.setStyleSheet(f"color:#ffb74d; font-size:{APP_FONT['caption']}px;")
+        self.status.showMessage("正在测试后台 OpenClaw 自动执行链路...")
+
+        from desktop.workers import Worker
+
+        def _boards_from_settings():
+            import re
+
+            return [
+                item.strip()
+                for item in re.split(r"[,，\s]+", self.settings.openclaw_daemon_boards.text().strip())
+                if item.strip()
+            ] or ["人工智能", "芯片", "量子科技"]
+
+        def _do():
+            from desktop.daemon_scheduler import DaemonScheduler
+
+            boards = _boards_from_settings()
+            scheduler = self._daemon if self._daemon else DaemonScheduler(boards)
+            scheduler.boards = boards
+            scheduler._task_openclaw_pipeline()
+            return True
+
+        def _done(_ok):
+            self.settings.btn_test_openclaw_daemon.setEnabled(True)
+            try:
+                import json
+
+                conn = self._get_db()
+                row = conn.execute(
+                    "SELECT value FROM kv_store WHERE key='openclaw_last_daemon_run'"
+                ).fetchone()
+                conn.close()
+                payload = json.loads(row[0]) if row else {}
+                if payload:
+                    self._apply_openclaw_daemon_last_run_label(payload)
+                status = str(payload.get("status", "success") or "success")
+                text = "✅ 后台 OpenClaw 测试完成" if status == "success" else f"⚠ 后台 OpenClaw 测试完成: {status}"
+                color = "#66bb6a" if status == "success" else "#ffb74d" if status == "warning" else "#ef5350"
+                self.settings.openclaw_daemon_test_status.setText(text)
+                self.settings.openclaw_daemon_test_status.setStyleSheet(f"color:{color}; font-size:{APP_FONT['caption']}px;")
+            except Exception as e:
+                self.settings.openclaw_daemon_test_status.setText(f"⚠ 测试完成但状态读取失败: {e}")
+                self.settings.openclaw_daemon_test_status.setStyleSheet(f"color:#ffb74d; font-size:{APP_FONT['caption']}px;")
+            self.status.showMessage("后台 OpenClaw 测试完成")
+
+        def _err(msg):
+            self.settings.btn_test_openclaw_daemon.setEnabled(True)
+            self.settings.openclaw_daemon_test_status.setText(f"❌ 后台 OpenClaw 测试失败: {msg}")
+            self.settings.openclaw_daemon_test_status.setStyleSheet(f"color:#ef5350; font-size:{APP_FONT['caption']}px;")
+
+        w = Worker(_do)
+        w.finished.connect(_done)
+        w.error.connect(_err)
+        w.start()
+        self._openclaw_daemon_test_worker = w
 
     def _on_view_sched_log(self):
         """查看调度日志。"""
@@ -3942,21 +4658,40 @@ class MainWindow(QMainWindow):
         from desktop.workers import Worker
 
         def _do():
+            from core.application.ops_service import get_ops_center_payload
+            from core.application.openclaw_service import get_openclaw_daemon_status
+
+            payload = get_ops_center_payload(limit=30)
             return {
-                "tasks": get_recent_task_runs(30),
-                "events": get_recent_system_events(30),
+                "tasks": payload.get("tasks", []),
+                "events": payload.get("events", []),
+                "daemon": payload.get("daemon", {}),
+                "registry": payload.get("registry", {}),
+                "openclaw_status": get_openclaw_daemon_status(),
             }
 
         def _done(data):
-            self.openclaw.update_ops_center(data.get("tasks", []), data.get("events", []))
-            self.openclaw.ops_status.setText(
-                f"✅ 已刷新：任务{len(data.get('tasks', []))} 条，事件{len(data.get('events', []))} 条"
+            self.openclaw.update_ops_center(
+                data.get("tasks", []),
+                data.get("events", []),
+                daemon=data.get("daemon", {}),
+                registry=data.get("registry", {}),
+                openclaw_status=data.get("openclaw_status", {}),
             )
-            self.openclaw.ops_status.setStyleSheet("color:#66bb6a; font-size:12px;")
+            registry = data.get("registry", {}) or {}
+            self.openclaw.ops_status.setText(
+                f"✅ 已刷新：任务{len(data.get('tasks', []))} 条，事件{len(data.get('events', []))} 条，"
+                f"智能体{registry.get('agent_count', 0)} 个"
+            )
+            self.openclaw.ops_status.setStyleSheet(
+                f"color:#66bb6a; font-size:{APP_FONT['body']}px;"
+            )
 
         def _err(msg):
             self.openclaw.ops_status.setText(f"❌ 刷新失败: {msg}")
-            self.openclaw.ops_status.setStyleSheet("color:#ef5350; font-size:12px;")
+            self.openclaw.ops_status.setStyleSheet(
+                f"color:#ef5350; font-size:{APP_FONT['body']}px;"
+            )
 
         w = Worker(_do)
         w.finished.connect(_done)
@@ -3964,31 +4699,123 @@ class MainWindow(QMainWindow):
         w.start()
         self._oc_ops_worker = w
 
+    def _on_openclaw_guard_replay(self):
+        """运行无人值守安全闸无下单回放，并刷新运行中心。"""
+        self.openclaw.btn_run_guard_replay.setEnabled(False)
+        self.openclaw.openclaw_guard_replay_status.setText("⏳ 回放中...")
+        self.openclaw.openclaw_guard_replay_status.setStyleSheet(f"color:#ffb74d; font-size:{APP_FONT['caption']}px;")
+        from desktop.workers import Worker
+
+        def _do():
+            from core.application.openclaw_service import run_unattended_trade_guard_replay
+
+            return run_unattended_trade_guard_replay({"limit": 10, "shares": 100, "mode": "auto"})
+
+        def _done(result):
+            self.openclaw.btn_run_guard_replay.setEnabled(True)
+            if result.get("ok") is False:
+                self.openclaw.openclaw_guard_replay_status.setText(f"⚠ {result.get('message', '回放无输入')}")
+                self.openclaw.openclaw_guard_replay_status.setStyleSheet(
+                    f"color:#ffb74d; font-size:{APP_FONT['caption']}px;"
+                )
+            else:
+                self.openclaw.openclaw_guard_replay_status.setText(
+                    "✅ 回放完成："
+                    f"输入{result.get('input_count', 0)} | "
+                    f"通过{result.get('approved_count', 0)} | "
+                    f"拒绝{result.get('rejected_count', 0)}"
+                )
+                self.openclaw.openclaw_guard_replay_status.setStyleSheet(
+                    f"color:#66bb6a; font-size:{APP_FONT['caption']}px;"
+                )
+            self._on_openclaw_refresh_ops()
+
+        def _err(msg):
+            self.openclaw.btn_run_guard_replay.setEnabled(True)
+            self.openclaw.openclaw_guard_replay_status.setText(f"❌ 回放失败: {msg}")
+            self.openclaw.openclaw_guard_replay_status.setStyleSheet(
+                f"color:#ef5350; font-size:{APP_FONT['caption']}px;"
+            )
+
+        w = Worker(_do)
+        w.finished.connect(_done)
+        w.error.connect(_err)
+        w.start()
+        self._oc_guard_replay_worker = w
+
+    def _on_openclaw_config_rollback(self):
+        """回滚最近一条 OpenClaw 配置审计记录，并刷新运行中心。"""
+        self.openclaw.btn_rollback_config_audit.setEnabled(False)
+        self.openclaw.openclaw_config_rollback_status.setText("⏳ 回滚中...")
+        self.openclaw.openclaw_config_rollback_status.setStyleSheet(
+            f"color:#ffb74d; font-size:{APP_FONT['caption']}px;"
+        )
+        from desktop.workers import Worker
+
+        def _do():
+            from core.application.openclaw_service import rollback_openclaw_config
+
+            return rollback_openclaw_config(audit_index=0)
+
+        def _done(result):
+            self.openclaw.btn_rollback_config_audit.setEnabled(True)
+            self.openclaw.openclaw_config_rollback_status.setText(
+                f"✅ 已回滚 {result.get('domain', '-')}: "
+                f"{', '.join([str(x) for x in result.get('source_audit', {}).get('changed_keys', [])[:5]])}"
+            )
+            self.openclaw.openclaw_config_rollback_status.setStyleSheet(
+                f"color:#66bb6a; font-size:{APP_FONT['caption']}px;"
+            )
+            self._on_openclaw_refresh_ops()
+
+        def _err(msg):
+            self.openclaw.btn_rollback_config_audit.setEnabled(True)
+            self.openclaw.openclaw_config_rollback_status.setText(f"❌ 回滚失败: {msg}")
+            self.openclaw.openclaw_config_rollback_status.setStyleSheet(
+                f"color:#ef5350; font-size:{APP_FONT['caption']}px;"
+            )
+
+        w = Worker(_do)
+        w.finished.connect(_done)
+        w.error.connect(_err)
+        w.start()
+        self._oc_config_rollback_worker = w
+
     def _on_ops_center_refresh(self):
         """刷新顶级运行中心。"""
         self.ops_center.status_label.setText("⏳ 刷新中...")
         from desktop.workers import Worker
 
         def _do():
-            from desktop.snapshot_service import get_system_snapshot
+            from core.application.ops_service import get_ops_center_payload
+
+            payload = get_ops_center_payload(limit=50, refresh_snapshot=True)
             return {
-                "snapshot": get_system_snapshot(),
-                "tasks": get_recent_task_runs(50),
-                "events": get_recent_system_events(50),
+                "snapshot": payload.get("snapshot", {}),
+                "tasks": payload.get("tasks", []),
+                "events": payload.get("events", []),
+                "daemon": payload.get("daemon", {}),
+                "daemon_health": payload.get("daemon_health", {}),
             }
 
         def _done(data):
             self.ops_center.update_snapshot(data.get("snapshot", {}))
+            self.ops_center.update_daemon(data.get("daemon", {}))
+            self.ops_center.update_daemon_health(data.get("daemon_health", {}))
             self.ops_center.update_task_runs(data.get("tasks", []))
             self.ops_center.update_events(data.get("events", []))
             self.ops_center.status_label.setText(
                 f"✅ 已刷新：任务{len(data.get('tasks', []))}条，事件{len(data.get('events', []))}条"
             )
-            self.ops_center.status_label.setStyleSheet("color:#66bb6a; font-size:12px;")
+            self.ops_center.status_label.setStyleSheet(
+                f"color:#66bb6a; font-size:{APP_FONT['body']}px;"
+            )
 
         def _err(msg):
             self.ops_center.status_label.setText(f"❌ 刷新失败: {msg}")
-            self.ops_center.status_label.setStyleSheet("color:#ef5350; font-size:12px;")
+            self.ops_center.status_label.setStyleSheet(
+                f"color:#ef5350; font-size:{APP_FONT['body']}px;"
+            )
 
         w = Worker(_do)
         w.finished.connect(_done)
@@ -3996,12 +4823,61 @@ class MainWindow(QMainWindow):
         w.start()
         self._ops_center_worker = w
 
+    def _on_ops_center_self_check(self):
+        """运行 daemon 链路即时健康自检。"""
+        self.ops_center.self_check_label.setText("链路健康: 检测中...")
+        self.ops_center.self_check_label.setStyleSheet(
+            f"color:#4fc3f7; font-size:{APP_FONT['body']}px;"
+        )
+        from desktop.workers import Worker
+
+        def _do():
+            from core.application.ops_service import get_ops_center_payload
+            payload = get_ops_center_payload(limit=10, refresh_snapshot=False)
+            return payload.get("daemon_health", {})
+
+        def _done(report):
+            self.ops_center.update_daemon_health(report if isinstance(report, dict) else {})
+
+        def _err(msg):
+            self.ops_center.self_check_label.setText(f"链路健康: 检测失败（{msg}）")
+            self.ops_center.self_check_label.setStyleSheet(
+                f"color:#ef5350; font-size:{APP_FONT['body']}px;"
+            )
+            self.ops_center.self_check_suggestion.setText("修复建议: 请先刷新运行中心，确认本地数据库与 daemon 状态可读取。")
+            self.ops_center.btn_copy_diagnostics.setEnabled(False)
+
+        w = Worker(_do)
+        w.finished.connect(_done)
+        w.error.connect(_err)
+        w.start()
+        self._ops_self_check_worker = w
+
+    def _on_ops_center_suggestion_jump(self, target: str):
+        jump = str(target or "").strip().lower()
+        self.tabs.setCurrentWidget(self.settings)
+        if jump == "settings_push":
+            self.settings.focus_section("push")
+            self.status.showMessage("已跳转到设置 -> 消息推送，请检查并测试推送配置。")
+            return
+        if jump == "settings_schedule":
+            self.settings.focus_section("schedule")
+            self.status.showMessage("已跳转到设置 -> 自动化调度引擎，请检查 daemon/任务调度配置。")
+            return
+        if jump == "settings_ai":
+            self.settings.focus_section("ai")
+            self.status.showMessage("已跳转到设置 -> AI 模型配置。")
+            return
+        self.status.showMessage("当前建议无需跳转，链路状态正常。")
+
     def _on_openclaw_pipeline(self):
         """执行 OpenClaw 全流程管线。"""
         log_system_event("ui", "openclaw", "手动触发OpenClaw全流程")
         self.openclaw.btn_run_pipeline.setEnabled(False)
         self.openclaw.pipeline_progress.setValue(0)
         self.openclaw.pipeline_log.clear()
+        self.openclaw.update_agent_trace([], {})
+        self.openclaw.update_coordinator_orchestration([])
         self.status.showMessage("🦀 全流程执行中...")
 
         from desktop.workers import Worker
@@ -4019,6 +4895,11 @@ class MainWindow(QMainWindow):
 
         def _done(result):
             self.openclaw.btn_run_pipeline.setEnabled(True)
+            coordinator = result.get("coordinator", {}) or {}
+            if coordinator:
+                self.openclaw.append_pipeline_log(
+                    f"🧭 协调者计划: {coordinator.get('summary', '')}"
+                )
             steps = result.get("steps", [])
             for i, s in enumerate(steps):
                 status = "完成" if s.get("status") == "ok" else "失败"
@@ -4042,20 +4923,77 @@ class MainWindow(QMainWindow):
                 self.openclaw.append_pipeline_log(f"\n⚠ 共 {len(errors)} 个错误")
             else:
                 self.openclaw.append_pipeline_log("\n🎉 全流程执行成功！")
+            exec_summary = coordinator.get("execution", {}) if isinstance(coordinator, dict) else {}
+            if exec_summary:
+                self.openclaw.append_pipeline_log(
+                    f"🧭 协调者总结: {exec_summary.get('summary', '')}"
+                )
+                self.openclaw.append_pipeline_log(
+                    f"🧭 下一步建议: {exec_summary.get('next_action', '')}"
+                )
+            routing = coordinator.get("routing", []) if isinstance(coordinator, dict) else []
+            if routing:
+                routed_stages = [
+                    f"{item.get('stage', '')}:{item.get('mode', 'normal')}"
+                    for item in routing
+                    if not bool(item.get("run", True))
+                    or str(item.get("mode", "normal") or "normal") != "normal"
+                ]
+                if routed_stages:
+                    self.openclaw.append_pipeline_log(
+                        f"🧭 分流轨迹: {' | '.join(routed_stages[:6])}"
+                    )
+            orchestration = coordinator.get("orchestration", []) if isinstance(coordinator, dict) else []
+            self.openclaw.update_coordinator_orchestration(orchestration)
+            if orchestration:
+                orch_stages = []
+                for item in orchestration[:6]:
+                    actions = item.get("actions_done", item.get("actions", [])) or []
+                    action_text = ",".join(str(a.get("type", "")) for a in actions[:2] if isinstance(a, dict))
+                    orch_stages.append(
+                        f"{item.get('stage', '')}:{item.get('mode', 'normal')}"
+                        + (f"[{action_text}]" if action_text else "")
+                    )
+                self.openclaw.append_pipeline_log(
+                    f"🧭 编排检查: {' | '.join(orch_stages)}"
+                )
+            agent_trace = result.get("agent_trace", []) or []
+            agent_trace_ctx = result.get("agent_trace_context", {}) or {}
+            self.openclaw.update_agent_trace(agent_trace, agent_trace_ctx)
+            if agent_trace:
+                trace_id = str(agent_trace_ctx.get("trace_id_hex", "") or "")[:16]
+                self.openclaw.append_pipeline_log(
+                    f"🔎 Agent Trace: {len(agent_trace)} spans | trace={trace_id}"
+                )
 
             # ── 填充决策层表格 ──
             candidates = result.get("candidates", [])
+            verification = result.get("verification", {}) or {}
+            guardrails = result.get("decision_guardrails", {}) or {}
+            execution_plan = result.get("execution_plan", {}) or {}
+            approval_report = result.get("approval_report", {}) or {}
+            verification_map = {
+                str(item.get("code", "") or ""): item
+                for item in verification.get("all_candidates", []) or []
+            }
             from PyQt6.QtGui import QColor as _QC
             dt = self.openclaw.decision_result_table
             dt.setRowCount(len(candidates))
             for i, c in enumerate(candidates):
                 score = c.get("score", 0)
+                v = verification_map.get(str(c.get("code", "") or ""), {})
+                v_status = str(v.get("verification", "-") or "-")
+                v_score = v.get("verification_score", "-")
+                risk_level = str(v.get("board_risk_level", "-") or "-")
                 signal = "强烈买入" if score >= 70 else "建议买入" if score >= 50 else "观望"
                 vals = [
                     c.get("code", ""), c.get("name", ""),
                     signal, "多" if score >= 50 else "中性",
                     f"{min(score, 100)}%", str(score),
                     f"{min(score / 5, 20):.0f}%",
+                    v_status,
+                    str(v_score),
+                    risk_level,
                     f"动量{c.get('momentum_1m', 0):+.1f}% 波动{c.get('volatility', 0):.1f}%",
                 ]
                 for j, v in enumerate(vals):
@@ -4064,10 +5002,56 @@ class MainWindow(QMainWindow):
                     if j == 2:
                         color = _QC("#ef5350") if "强烈" in v else _QC("#4fc3f7") if "建议" in v else _QC("#888")
                         item.setForeground(color)
+                    if j == 7:
+                        if v == "verified":
+                            item.setForeground(_QC("#66BB6A"))
+                        elif v == "questionable":
+                            item.setForeground(_QC("#FFB300"))
+                        elif v == "rejected":
+                            item.setForeground(_QC("#EF5350"))
                     dt.setItem(i, j, item)
+            self.openclaw.decision_guard_label.setText(
+                "验证层状态："
+                f"通过 {len(verification.get('verified_candidates', []) or [])} | "
+                f"存疑 {len(verification.get('questionable_candidates', []) or [])} | "
+                f"高风险 {len(verification.get('rejected_candidates', []) or [])} | "
+                f"拦截买入 {len(guardrails.get('blocked_buys', []) or [])}"
+            )
+            raw_decisions = result.get("raw_decisions", []) or []
+            filtered_decisions = result.get("decisions", []) or []
+            blocked = guardrails.get("blocked_buys", []) or []
+            annotated = guardrails.get("annotated_buys", []) or []
+            routed_blocked = execution_plan.get("blocked", []) or []
+
+            def _fmt_decisions(items):
+                if not items:
+                    return "无"
+                labels = []
+                for item in items[:6]:
+                    action = str(item.get("action", "") or "").upper()
+                    code = str(item.get("code", "") or "")
+                    labels.append(f"{action} {code}".strip())
+                if len(items) > 6:
+                    labels.append(f"...共{len(items)}条")
+                return " / ".join(labels)
+
+            self.openclaw.decision_compare_text.setText(
+                "\n".join(
+                    [
+                        f"原始决策: {_fmt_decisions(raw_decisions)}",
+                        f"守门后决策: {_fmt_decisions(filtered_decisions)}",
+                        f"守门摘要: 拦截买入 {len(blocked)} 条，存疑放行 {len(annotated)} 条",
+                        "分流摘要: "
+                        f"模式 {execution_plan.get('mode', 'normal')}，"
+                        f"分流拦截 {len(routed_blocked)} 条",
+                        "审批摘要: "
+                        f"{approval_report.get('summary', '待审批')}",
+                    ]
+                )
+            )
 
             # ── 填充执行层表格 ──
-            decisions = result.get("decisions", [])
+            decisions = result.get("executed_decisions", result.get("decisions", []))
             et = self.openclaw.exec_table
             et.setRowCount(len(decisions))
             now_str = __import__("datetime").datetime.now().strftime("%H:%M:%S")
@@ -4090,8 +5074,60 @@ class MainWindow(QMainWindow):
 
             if not decisions:
                 et.setRowCount(1)
-                item = QTableWidgetItem("本次无交易指令（AI 分析未产出决策或非交易时间）")
+                blocked_count = len(routed_blocked)
+                if blocked_count:
+                    text = f"本次无实际执行：策略分流已拦截 {blocked_count} 条指令"
+                else:
+                    text = "本次无交易指令（AI 分析未产出决策或非交易时间）"
+                item = QTableWidgetItem(text)
                 et.setItem(0, 0, item)
+
+            plan_mode = str(execution_plan.get("mode", "normal") or "normal")
+            policy = execution_plan.get("policy", {}) or {}
+            policy_bits = []
+            if policy:
+                if policy.get("allow_buy") is False:
+                    policy_bits.append("禁止买入")
+                elif "max_buy_count" in policy and policy.get("max_buy_count", -1) >= 0:
+                    policy_bits.append(f"买入上限 {policy.get('max_buy_count')} 条")
+                if policy.get("allow_sell") is False:
+                    policy_bits.append("禁止卖出")
+                if policy.get("allow_hold") is False:
+                    policy_bits.append("禁止持有")
+            plan_text = (
+                f"策略分流：模式 {plan_mode} | "
+                f"实际执行 {len(decisions)} 条 | "
+                f"分流拦截 {len(routed_blocked)} 条"
+            )
+            rejected_count = len(approval_report.get("rejected_decisions", []) or [])
+            if rejected_count:
+                plan_text += f" | 审批拒绝 {rejected_count} 条"
+            if policy_bits:
+                plan_text += f" | {'，'.join(policy_bits)}"
+            self.openclaw.execution_plan_label.setText(plan_text)
+
+            bt = self.openclaw.execution_block_table
+            if routed_blocked:
+                bt.setRowCount(len(routed_blocked))
+                for i, item_payload in enumerate(routed_blocked):
+                    action = str(item_payload.get("action", "") or "").upper()
+                    vals = [
+                        action,
+                        item_payload.get("code", ""),
+                        item_payload.get("name", ""),
+                        item_payload.get("reason", ""),
+                    ]
+                    for j, v in enumerate(vals):
+                        item = QTableWidgetItem(str(v))
+                        item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                        if j == 0:
+                            item.setForeground(_QC("#EF5350"))
+                        bt.setItem(i, j, item)
+            else:
+                bt.setRowCount(1)
+                item = QTableWidgetItem("暂无策略分流拦截")
+                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                bt.setItem(0, 0, item)
 
             # ── 填充反馈层 ──
             try:
@@ -4291,10 +5327,12 @@ class MainWindow(QMainWindow):
 
         def _do():
             from desktop.openclaw_learner import evaluate_and_learn, get_strategy_weights, get_learning_history
+            from desktop.agents import get_coordinator_policy_config
             result = evaluate_and_learn()
             weights = get_strategy_weights()
             history = get_learning_history(10)
-            return {"result": result, "weights": weights, "history": history}
+            coordinator_policy = get_coordinator_policy_config()
+            return {"result": result, "weights": weights, "history": history, "coordinator_policy": coordinator_policy}
 
         def _done(data):
             self.openclaw.btn_learn_now.setEnabled(True)
@@ -4303,13 +5341,22 @@ class MainWindow(QMainWindow):
 
             self.openclaw.update_strategy_weights(weights)
             self.openclaw.update_findings(result.get("learnings", []))
+            self.openclaw.update_verification_effectiveness(
+                result.get("ai_perf", {}).get("verification_effectiveness", {})
+            )
+            self.openclaw.update_coordinator_effectiveness(
+                result.get("ai_perf", {}).get("coordinator_effectiveness", {}),
+                data.get("coordinator_policy", {}),
+            )
 
             n_strat = len(result.get("scan_perf", {}))
             n_learn = len(result.get("learnings", []))
             self.openclaw.evolve_status.setText(
                 f"✅ 学习完成：{n_strat} 个策略评估，{n_learn} 条发现"
             )
-            self.openclaw.evolve_status.setStyleSheet("color:#66bb6a; font-size:12px;")
+            self.openclaw.evolve_status.setStyleSheet(
+                f"color:#66bb6a; font-size:{APP_FONT['body']}px;"
+            )
 
             # 学习历史
             lines = []
@@ -4383,7 +5430,9 @@ class MainWindow(QMainWindow):
             self.openclaw.evolve_status.setText(
                 f"✅ 策略权重已应用到完全自主仓 | 最优策略: {best[0]}(权重{best[1]['weight']:.1f})"
             )
-            self.openclaw.evolve_status.setStyleSheet("color:#66bb6a; font-size:12px;")
+            self.openclaw.evolve_status.setStyleSheet(
+                f"color:#66bb6a; font-size:{APP_FONT['body']}px;"
+            )
             self.status.showMessage("✅ 学习权重已应用到完全自主仓")
         except Exception as e:
             self.status.showMessage(f"应用失败: {e}")
@@ -4585,6 +5634,7 @@ class MainWindow(QMainWindow):
         try:
             from desktop.ai_portfolio import get_log
             from desktop.snapshot_service import get_system_snapshot
+            from core.application.portfolio_service import get_portfolio_recommendations
 
             snap = get_system_snapshot()
             comp = snap.get("ai_portfolios", {})
@@ -4597,6 +5647,16 @@ class MainWindow(QMainWindow):
             self.ai_portfolio.update_log(
                 get_log("auto", 10) + get_log("full_auto", 10),
                 get_log("manual", 10),
+            )
+            latest = get_portfolio_recommendations(limit=20)
+            self.ai_portfolio.update_decision_guard_summary(
+                latest.get("verification_summary", {}),
+                latest.get("guardrail_summary", {}),
+            )
+            self.ai_portfolio.update_decision_comparison(
+                latest.get("raw_items", []),
+                latest.get("items", []),
+                latest.get("guardrail_summary", {}),
             )
         except Exception as e:
             _log.error(f"refresh_ai_portfolio error: {e}")
@@ -4633,7 +5693,7 @@ class MainWindow(QMainWindow):
             self.ai_chat.append_message(
                 "system",
                 "AI 功能需要配置 API Key 后使用。\n"
-                "请在「🤖 AI仓」页面顶部填写 API Key 并点击「保存配置」，\n"
+                "请在「⚙️ 设置」→「AI 模型配置」中填写 API Key 并保存，\n"
                 "或在环境变量中设置 DEEPSEEK_API_KEY。"
             )
             return

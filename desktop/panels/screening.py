@@ -3,13 +3,150 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QComboBox, QSpinBox, QTableWidget, QTableWidgetItem, QLineEdit,
     QHeaderView, QGroupBox, QProgressBar, QTreeWidget, QTreeWidgetItem,
-    QSplitter, QTabWidget, QStackedWidget, QCheckBox,
+    QSplitter, QTabWidget, QStackedWidget, QCheckBox, QDialog,
+    QDialogButtonBox, QMessageBox, QScrollArea, QFrame,
 )
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QFont, QColor, QBrush
+
+from desktop.platform_store import get_kv_json, set_kv_json
+
+
+class MultiStrategyScanDialog(QDialog):
+    def __init__(
+        self,
+        strategies: list[tuple[str, str]],
+        preselected_ids: list[str] | None = None,
+        current_ids: list[str] | None = None,
+        frequent_ids: list[str] | None = None,
+        recent_presets: list[tuple[str, list[str]]] | None = None,
+        parent=None,
+    ):
+        super().__init__(parent)
+        self.setWindowTitle("多策略扫描")
+        self.resize(620, 520)
+        self._checkboxes: list[tuple[str, str, QCheckBox]] = []
+        self._preselected_ids = set(preselected_ids or [])
+        self._current_ids = set(current_ids or [])
+        self._frequent_ids = set(frequent_ids or [])
+        self._recent_presets = recent_presets or []
+
+        layout = QVBoxLayout(self)
+        hint = QLabel("勾选要同时运行的策略。结果会自动聚合，相同股票会按命中数前置并高亮。")
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color:#888; padding:4px 0 8px 0;")
+        layout.addWidget(hint)
+
+        if self._recent_presets:
+            recent_row = QHBoxLayout()
+            recent_row.addWidget(QLabel("最近组合:"))
+            for label, ids in self._recent_presets[:3]:
+                btn = QPushButton(label)
+                btn.setStyleSheet("padding:4px 10px;")
+                btn.clicked.connect(lambda checked=False, ids=ids: self.apply_selection(ids))
+                recent_row.addWidget(btn)
+            recent_row.addStretch()
+            layout.addLayout(recent_row)
+
+        toolbar = QHBoxLayout()
+        btn_restore_last = QPushButton("恢复上次组合")
+        btn_frequent = QPushButton("常用组合")
+        btn_select_all = QPushButton("全选")
+        btn_clear = QPushButton("清空")
+        btn_select_current = QPushButton("仅当前策略")
+        toolbar.addWidget(btn_restore_last)
+        toolbar.addWidget(btn_frequent)
+        toolbar.addWidget(btn_select_all)
+        toolbar.addWidget(btn_clear)
+        toolbar.addWidget(btn_select_current)
+        toolbar.addStretch()
+        layout.addLayout(toolbar)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        container = QWidget()
+        grid = QVBoxLayout(container)
+        grid.setContentsMargins(6, 6, 6, 6)
+        grid.setSpacing(6)
+
+        selected = set(preselected_ids or [])
+        for label, sid in strategies:
+            cb = QCheckBox(label)
+            cb.setChecked(sid in selected)
+            cb.setStyleSheet("padding:4px 2px;")
+            grid.addWidget(cb)
+            self._checkboxes.append((label, sid, cb))
+
+        grid.addStretch()
+        scroll.setWidget(container)
+        layout.addWidget(scroll)
+
+        summary_line = QFrame()
+        summary_line.setFrameShape(QFrame.Shape.HLine)
+        summary_line.setStyleSheet("color:#333;")
+        layout.addWidget(summary_line)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self._accept_if_valid)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+        btn_restore_last.clicked.connect(self.select_preselected)
+        btn_frequent.clicked.connect(self.select_frequent)
+        btn_select_all.clicked.connect(self.select_all)
+        btn_clear.clicked.connect(self.clear_all)
+        btn_select_current.clicked.connect(self.select_current)
+        btn_restore_last.setEnabled(bool(self._preselected_ids))
+        btn_frequent.setEnabled(bool(self._frequent_ids))
+
+    def select_all(self):
+        for _, _, cb in self._checkboxes:
+            cb.setChecked(True)
+
+    def clear_all(self):
+        for _, _, cb in self._checkboxes:
+            cb.setChecked(False)
+
+    def select_preselected(self):
+        for _, sid, cb in self._checkboxes:
+            cb.setChecked(sid in self._preselected_ids)
+
+    def apply_selection(self, ids: list[str]):
+        selected = set(ids or [])
+        for _, sid, cb in self._checkboxes:
+            cb.setChecked(sid in selected)
+
+    def select_current(self):
+        self.apply_selection(list(self._current_ids))
+
+    def select_frequent(self):
+        self.apply_selection(list(self._frequent_ids))
+
+    def selected_strategy_ids(self) -> list[str]:
+        return [sid for _, sid, cb in self._checkboxes if cb.isChecked()]
+
+    def _accept_if_valid(self):
+        if not self.selected_strategy_ids():
+            QMessageBox.warning(self, "未选择策略", "请至少勾选一个策略。")
+            return
+        self.accept()
 
 
 class ScreeningPanel(QWidget):
+    scan_stock_activated = pyqtSignal(str)
+    _SCAN_FILTER_STATE_KEY = "screening_scan_filter_state"
+    _MULTI_SCAN_SELECTION_KEY = "screening_multi_scan_selection"
+    _MULTI_SCAN_USAGE_KEY = "screening_multi_scan_usage"
+    _MULTI_SCAN_RECENT_KEY = "screening_multi_scan_recent"
+
+    _SCAN_HEADERS = [
+        "代码", "名称", "板块", "策略", "价格", "RS", "评分",
+        "VCP", "突破", "收缩", "量比", "离高点%", "建议买入", "建议操作",
+        "共振", "命中数", "命中策略",
+    ]
+
     def __init__(self, parent=None):
         super().__init__(parent)
         layout = QVBoxLayout(self)
@@ -127,6 +264,10 @@ class ScreeningPanel(QWidget):
         self.btn_scan.setStyleSheet("font-size: 14px; padding: 10px 24px;")
         params.addWidget(self.btn_scan)
 
+        self.btn_multi_scan = QPushButton("🧠 多策略扫描")
+        self.btn_multi_scan.setStyleSheet("font-size: 14px; padding: 10px 18px;")
+        params.addWidget(self.btn_multi_scan)
+
         self.btn_push = QPushButton("📤 推送突破信号")
         params.addWidget(self.btn_push)
         params.addStretch()
@@ -136,22 +277,79 @@ class ScreeningPanel(QWidget):
         self.progress.setVisible(False)
         layout.addWidget(self.progress)
 
-        self.result_table = QTableWidget()
-        self.result_table.setColumnCount(14)
-        self.result_table.setHorizontalHeaderLabels([
-            "代码", "名称", "板块", "策略", "价格", "RS", "评分",
-            "VCP", "突破", "收缩", "量比", "离高点%", "建议买入", "建议操作",
-        ])
-        self.result_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        self.result_table.setAlternatingRowColors(True)
-        self.result_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.result_table.setSortingEnabled(True)
-        layout.addWidget(self.result_table)
+        filters = QHBoxLayout()
+        filters.addWidget(QLabel("筛选:"))
+
+        self.scan_filter_resonance = QComboBox()
+        self.scan_filter_resonance.addItems(["全部", "仅共振", "仅非共振"])
+        filters.addWidget(self.scan_filter_resonance)
+
+        filters.addWidget(QLabel("命中数≥"))
+        self.scan_filter_hits = QSpinBox()
+        self.scan_filter_hits.setRange(1, 9)
+        self.scan_filter_hits.setValue(1)
+        self.scan_filter_hits.setFixedWidth(70)
+        filters.addWidget(self.scan_filter_hits)
+
+        filters.addWidget(QLabel("买入建议"))
+        self.scan_filter_buy = QComboBox()
+        self.scan_filter_buy.addItems(["全部", "强烈买入", "建议买入", "观望及以下"])
+        filters.addWidget(self.scan_filter_buy)
+
+        filters.addWidget(QLabel("关键词"))
+        self.scan_filter_keyword = QLineEdit()
+        self.scan_filter_keyword.setPlaceholderText("代码 / 名称 / 板块 / 策略")
+        self.scan_filter_keyword.setClearButtonEnabled(True)
+        filters.addWidget(self.scan_filter_keyword)
+
+        self.btn_scan_filter_reset = QPushButton("重置筛选")
+        filters.addWidget(self.btn_scan_filter_reset)
+        filters.addStretch()
+        layout.addLayout(filters)
+
+        self.scan_result_tabs = QTabWidget()
+        self.result_table = self._create_scan_result_table()
+        self.scan_result_tabs.addTab(self.result_table, "聚合总表")
+        self._strategy_result_tables: dict[str, QTableWidget] = {}
+        self._all_aggregate_candidates: list[dict] = []
+        self._last_overlap_rows = 0
+        self._last_tab_count = 0
+        self._suspend_filter_persist = True
+        layout.addWidget(self.scan_result_tabs)
 
         self.status_label = QLabel("就绪")
         self.status_label.setStyleSheet("color: #888;")
         layout.addWidget(self.status_label)
+
+        self._restore_scan_filter_state()
+        self._suspend_filter_persist = False
+
+        self.scan_filter_resonance.currentIndexChanged.connect(self._on_scan_filter_changed)
+        self.scan_filter_hits.valueChanged.connect(self._on_scan_filter_changed)
+        self.scan_filter_buy.currentIndexChanged.connect(self._on_scan_filter_changed)
+        self.scan_filter_keyword.textChanged.connect(self._on_scan_filter_changed)
+        self.btn_scan_filter_reset.clicked.connect(self._reset_scan_filters)
         return w
+
+    def _create_scan_result_table(self) -> QTableWidget:
+        table = QTableWidget()
+        table.setColumnCount(len(self._SCAN_HEADERS))
+        table.setHorizontalHeaderLabels(self._SCAN_HEADERS)
+        table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        table.setAlternatingRowColors(True)
+        table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        table.setSortingEnabled(True)
+        table.cellDoubleClicked.connect(
+            lambda row, col, table=table: self._emit_scan_stock_from_table(table, row)
+        )
+        return table
+
+    def _emit_scan_stock_from_table(self, table: QTableWidget, row: int):
+        item = table.item(row, 0)
+        if item:
+            code = item.text().strip()
+            if code:
+                self.scan_stock_activated.emit(code)
 
     def populate_board_tree(self, groups: dict[str, list[str]], board_stocks: dict[str, list[str]],
                             stock_names: dict[str, str]):
@@ -332,28 +530,42 @@ class ScreeningPanel(QWidget):
         except (ValueError, TypeError):
             return "-"
 
-    def populate_results(self, candidates: list[dict]):
+    def _populate_scan_table(self, table: QTableWidget, candidates: list[dict]):
         red = QBrush(QColor("#ef5350"))
         green = QBrush(QColor("#26a69a"))
         orange = QBrush(QColor("#FF9800"))
         cyan = QBrush(QColor("#4fc3f7"))
+        gold_bg = QBrush(QColor("#3A2F12"))
+        purple_fg = QBrush(QColor("#CE93D8"))
+        muted_fg = QBrush(QColor("#888"))
 
-        self.result_table.setRowCount(len(candidates))
+        table.setSortingEnabled(False)
+        table.setRowCount(len(candidates))
         cols = ["代码", "名称", "板块", "策略", "价格", "RS", "评分",
                 "VCP", "突破", "收缩", "量比", "离高点%"]
         for i, c in enumerate(candidates):
+            overlap_count = int(c.get("命中数", 1) or 1)
             for j, col in enumerate(cols):
                 val = c.get(col, "")
                 item = QTableWidgetItem(str(val))
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                self.result_table.setItem(i, j, item)
+                if overlap_count > 1:
+                    item.setBackground(gold_bg)
+                table.setItem(i, j, item)
 
             buy_advice = c.get("建议买入", "")
             action_advice = c.get("建议操作", "")
+            resonance = c.get("共振", "")
             buy_item = QTableWidgetItem(buy_advice)
             action_item = QTableWidgetItem(action_advice)
+            resonance_item = QTableWidgetItem(str(resonance))
+            overlap_item = QTableWidgetItem(str(overlap_count))
+            strategies_item = QTableWidgetItem(str(c.get("命中策略", c.get("策略", ""))))
             buy_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             action_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            resonance_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            overlap_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            strategies_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
 
             if "买入" in buy_advice:
                 buy_item.setForeground(red)
@@ -369,10 +581,218 @@ class ScreeningPanel(QWidget):
                 action_item.setForeground(red)
                 action_item.setFont(QFont("", 10, QFont.Weight.Bold))
 
-            self.result_table.setItem(i, 12, buy_item)
-            self.result_table.setItem(i, 13, action_item)
+            if overlap_count > 1:
+                resonance_item.setForeground(purple_fg)
+                resonance_item.setFont(QFont("", 10, QFont.Weight.Bold))
+                overlap_item.setForeground(purple_fg)
+                overlap_item.setFont(QFont("", 10, QFont.Weight.Bold))
+                strategies_item.setForeground(purple_fg)
+                for item in (buy_item, action_item, resonance_item, overlap_item, strategies_item):
+                    item.setBackground(gold_bg)
+            else:
+                resonance_item.setForeground(muted_fg)
 
-        self.status_label.setText(f"共 {len(candidates)} 只候选")
+            table.setItem(i, 12, buy_item)
+            table.setItem(i, 13, action_item)
+            table.setItem(i, 14, resonance_item)
+            table.setItem(i, 15, overlap_item)
+            table.setItem(i, 16, strategies_item)
+
+        table.setSortingEnabled(True)
+
+    def _get_scan_filter_state(self) -> dict:
+        return {
+            "resonance": self.scan_filter_resonance.currentText(),
+            "min_hits": int(self.scan_filter_hits.value() or 1),
+            "buy_mode": self.scan_filter_buy.currentText(),
+            "keyword": self.scan_filter_keyword.text().strip(),
+        }
+
+    def _save_scan_filter_state(self):
+        if self._suspend_filter_persist:
+            return
+        try:
+            set_kv_json(self._SCAN_FILTER_STATE_KEY, self._get_scan_filter_state())
+        except Exception:
+            pass
+
+    def _restore_scan_filter_state(self):
+        state = get_kv_json(self._SCAN_FILTER_STATE_KEY, {}) or {}
+        if not isinstance(state, dict):
+            return
+
+        resonance = str(state.get("resonance", "全部"))
+        idx = self.scan_filter_resonance.findText(resonance)
+        if idx >= 0:
+            self.scan_filter_resonance.setCurrentIndex(idx)
+
+        try:
+            min_hits = max(1, int(state.get("min_hits", 1) or 1))
+            self.scan_filter_hits.setValue(min_hits)
+        except (TypeError, ValueError):
+            self.scan_filter_hits.setValue(1)
+
+        buy_mode = str(state.get("buy_mode", "全部"))
+        idx = self.scan_filter_buy.findText(buy_mode)
+        if idx >= 0:
+            self.scan_filter_buy.setCurrentIndex(idx)
+
+        keyword = str(state.get("keyword", "") or "")
+        self.scan_filter_keyword.setText(keyword)
+
+    def _on_scan_filter_changed(self):
+        self._save_scan_filter_state()
+        self._apply_aggregate_filters()
+
+    def _reset_scan_filters(self):
+        self._suspend_filter_persist = True
+        self.scan_filter_resonance.setCurrentIndex(0)
+        self.scan_filter_hits.setValue(1)
+        self.scan_filter_buy.setCurrentIndex(0)
+        self.scan_filter_keyword.clear()
+        self._suspend_filter_persist = False
+        self._save_scan_filter_state()
+        self._apply_aggregate_filters()
+
+    def _apply_aggregate_filters(self):
+        candidates = list(self._all_aggregate_candidates or [])
+        resonance_mode = self.scan_filter_resonance.currentText()
+        min_hits = int(self.scan_filter_hits.value() or 1)
+        buy_mode = self.scan_filter_buy.currentText()
+        keyword = self.scan_filter_keyword.text().strip().lower()
+
+        filtered = []
+        for row in candidates:
+            hits = int(row.get("命中数", 1) or 1)
+            is_resonance = hits > 1
+            buy_advice = str(row.get("建议买入", ""))
+            haystack = " ".join(
+                str(row.get(k, "")) for k in ("代码", "名称", "板块", "策略", "命中策略")
+            ).lower()
+
+            if resonance_mode == "仅共振" and not is_resonance:
+                continue
+            if resonance_mode == "仅非共振" and is_resonance:
+                continue
+            if hits < min_hits:
+                continue
+            if buy_mode == "强烈买入" and "强烈买入" not in buy_advice:
+                continue
+            if buy_mode == "建议买入" and "建议买入" not in buy_advice and "强烈买入" not in buy_advice:
+                continue
+            if buy_mode == "观望及以下" and ("强烈买入" in buy_advice or "建议买入" in buy_advice):
+                continue
+            if keyword and keyword not in haystack:
+                continue
+            filtered.append(row)
+
+        self._populate_scan_table(self.result_table, filtered)
+        raw_count = len(candidates)
+        filtered_count = len(filtered)
+        tab_hint = f"，策略页签 {self._last_tab_count} 个" if self._last_tab_count else ""
+        if filtered_count == raw_count:
+            self.status_label.setText(
+                f"共 {raw_count} 只候选，重复命中 {self._last_overlap_rows} 只{tab_hint}"
+            )
+        else:
+            self.status_label.setText(
+                f"筛选后 {filtered_count}/{raw_count} 只，重复命中 {self._last_overlap_rows} 只{tab_hint}"
+            )
+
+    def populate_results(self, candidates: list[dict], per_strategy: dict[str, list[dict]] | None = None):
+        self._all_aggregate_candidates = list(candidates or [])
+
+        while self.scan_result_tabs.count() > 1:
+            widget = self.scan_result_tabs.widget(1)
+            self.scan_result_tabs.removeTab(1)
+            if widget is not None:
+                widget.deleteLater()
+        self._strategy_result_tables = {}
+
+        for label, rows in (per_strategy or {}).items():
+            table = self._create_scan_result_table()
+            self._populate_scan_table(table, rows or [])
+            self._strategy_result_tables[label] = table
+            self.scan_result_tabs.addTab(table, label)
+
+        self._last_overlap_rows = sum(1 for c in candidates if int(c.get("命中数", 1) or 1) > 1)
+        self._last_tab_count = len(per_strategy or {})
+        self._apply_aggregate_filters()
+
+    def prompt_multi_strategy_selection(self) -> list[str]:
+        strategies = [
+            (self.combo_strategy.itemText(i), self.combo_strategy.itemData(i))
+            for i in range(self.combo_strategy.count())
+        ]
+        strategy_name_map = {sid: label for label, sid in strategies}
+        current_id = self.combo_strategy.currentData()
+        saved_ids = get_kv_json(self._MULTI_SCAN_SELECTION_KEY, []) or []
+        if not isinstance(saved_ids, list):
+            saved_ids = []
+        valid_ids = {sid for _, sid in strategies}
+        preselected_ids = [sid for sid in saved_ids if sid in valid_ids]
+        usage_map = get_kv_json(self._MULTI_SCAN_USAGE_KEY, {}) or {}
+        if not isinstance(usage_map, dict):
+            usage_map = {}
+        frequent_ids = [
+            sid
+            for sid, _ in sorted(
+                (
+                    (sid, int(count or 0))
+                    for sid, count in usage_map.items()
+                    if sid in valid_ids
+                ),
+                key=lambda item: item[1],
+                reverse=True,
+            )[:5]
+            if sid in valid_ids
+        ]
+        recent_raw = get_kv_json(self._MULTI_SCAN_RECENT_KEY, []) or []
+        recent_presets: list[tuple[str, list[str]]] = []
+        if isinstance(recent_raw, list):
+            for item in recent_raw[:3]:
+                if not isinstance(item, list):
+                    continue
+                ids = [sid for sid in item if sid in valid_ids]
+                if not ids:
+                    continue
+                names = [strategy_name_map.get(sid, sid) for sid in ids]
+                if len(names) <= 2:
+                    label = " + ".join(names)
+                else:
+                    label = " + ".join(names[:2]) + f" 等{len(names)}个"
+                recent_presets.append((label, ids))
+        if not preselected_ids and current_id:
+            preselected_ids = [current_id]
+        dialog = MultiStrategyScanDialog(
+            strategies=strategies,
+            preselected_ids=preselected_ids,
+            current_ids=[current_id] if current_id else [],
+            frequent_ids=frequent_ids,
+            recent_presets=recent_presets,
+            parent=self,
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return []
+        selected_ids = dialog.selected_strategy_ids()
+        try:
+            set_kv_json(self._MULTI_SCAN_SELECTION_KEY, selected_ids)
+            new_usage = dict(usage_map)
+            for sid in selected_ids:
+                new_usage[sid] = int(new_usage.get(sid, 0) or 0) + 1
+            set_kv_json(self._MULTI_SCAN_USAGE_KEY, new_usage)
+            recent_sequences = [selected_ids]
+            if isinstance(recent_raw, list):
+                for item in recent_raw:
+                    if not isinstance(item, list):
+                        continue
+                    ids = [sid for sid in item if sid in valid_ids]
+                    if ids and ids != selected_ids:
+                        recent_sequences.append(ids)
+            set_kv_json(self._MULTI_SCAN_RECENT_KEY, recent_sequences[:3])
+        except Exception:
+            pass
+        return selected_ids
 
     # ===== 量子优化 =====
     _QUANTUM_STRATEGIES = [

@@ -2,7 +2,7 @@
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTableWidget, QTableWidgetItem, QHeaderView, QGroupBox,
-    QTextEdit, QSplitter,
+    QTextEdit, QSplitter, QComboBox, QLineEdit,
 )
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFont, QColor
@@ -23,6 +23,9 @@ class TrendVerifyPanel(QWidget):
         self.btn_calibrate = QPushButton("🔄 校准走势")
         self.btn_calibrate.setStyleSheet("font-size: 13px; padding: 8px 16px; background: #FF6F00;")
         ctl.addWidget(self.btn_calibrate)
+        self.btn_batch_failure = QPushButton("🧠 批量失败归因")
+        self.btn_batch_failure.setStyleSheet("font-size: 13px; padding: 8px 16px; background: #6A1B9A;")
+        ctl.addWidget(self.btn_batch_failure)
         self.btn_ai_analyze = QPushButton("🦀 AI深度分析选中行")
         self.btn_ai_analyze.setStyleSheet("font-size: 13px; padding: 8px 16px; background: #1565C0;")
         ctl.addWidget(self.btn_ai_analyze)
@@ -35,12 +38,56 @@ class TrendVerifyPanel(QWidget):
         self.stats_label.setWordWrap(True)
         layout.addWidget(self.stats_label)
 
+        filter_row = QHBoxLayout()
+        filter_row.addWidget(QLabel("策略"))
+        self.filter_strategy = QComboBox()
+        self.filter_strategy.addItem("全部")
+        filter_row.addWidget(self.filter_strategy)
+
+        filter_row.addWidget(QLabel("根因"))
+        self.filter_root_cause = QComboBox()
+        self.filter_root_cause.addItem("全部")
+        filter_row.addWidget(self.filter_root_cause)
+
+        filter_row.addWidget(QLabel("市场环境"))
+        self.filter_market = QComboBox()
+        self.filter_market.addItem("全部")
+        filter_row.addWidget(self.filter_market)
+
+        filter_row.addWidget(QLabel("结果"))
+        self.filter_result = QComboBox()
+        self.filter_result.addItems(["全部", "仅失败", "仅正确", "仅待验证"])
+        filter_row.addWidget(self.filter_result)
+
+        self.filter_keyword = QLineEdit()
+        self.filter_keyword.setPlaceholderText("代码 / 名称 / 板块 / 标签")
+        self.filter_keyword.setClearButtonEnabled(True)
+        filter_row.addWidget(self.filter_keyword)
+
+        self.btn_reset_filters = QPushButton("重置筛选")
+        filter_row.addWidget(self.btn_reset_filters)
+        filter_row.addStretch()
+        layout.addLayout(filter_row)
+
+        summary_group = QGroupBox("失败归因汇总")
+        summary_layout = QVBoxLayout(summary_group)
+        self.failure_summary = QTextEdit()
+        self.failure_summary.setReadOnly(True)
+        self.failure_summary.setMaximumHeight(120)
+        self.failure_summary.setStyleSheet(
+            "font-size:12px; background:#0d1117; color:#d0d7de; padding:8px; "
+            "border:1px solid #30363d; border-radius:6px;"
+        )
+        self.failure_summary.setPlaceholderText("批量失败归因后，这里会显示失败根因、标签和策略分布汇总。")
+        summary_layout.addWidget(self.failure_summary)
+        layout.addWidget(summary_group)
+
         # 记录表
         self.table = QTableWidget()
-        self.table.setColumnCount(17)
+        self.table.setColumnCount(19)
         self.table.setHorizontalHeaderLabels([
             "代码", "名称", "板块", "信号日", "信号价", "评分", "策略", "信号",
-            "1日%", "2日%", "3日%", "5日%", "10日%", "20日%", "60日%", "结果", "分析原因",
+            "1日%", "2日%", "3日%", "5日%", "10日%", "20日%", "60日%", "结果", "归因", "标签", "分析原因",
         ])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.table.setAlternatingRowColors(True)
@@ -75,6 +122,15 @@ class TrendVerifyPanel(QWidget):
         splitter.setStretchFactor(1, 1)
         layout.addWidget(splitter)
 
+        self._all_records_cache = []
+        self._records_cache = []
+        self.filter_strategy.currentIndexChanged.connect(self._apply_filters)
+        self.filter_root_cause.currentIndexChanged.connect(self._apply_filters)
+        self.filter_market.currentIndexChanged.connect(self._apply_filters)
+        self.filter_result.currentIndexChanged.connect(self._apply_filters)
+        self.filter_keyword.textChanged.connect(self._apply_filters)
+        self.btn_reset_filters.clicked.connect(self._reset_filters)
+
     def update_stats(self, stats: dict):
         if stats.get("total", 0) == 0:
             self.stats_label.setText("暂无校准数据，请先执行选股扫描并校准")
@@ -98,6 +154,97 @@ class TrendVerifyPanel(QWidget):
 
         self.stats_label.setText(" | ".join(parts))
 
+    def update_failure_summary(self, summary: dict):
+        if summary.get("failed_total", 0) == 0:
+            self.failure_summary.setText("暂无失败信号归因数据。可先校准走势，再执行“批量失败归因”。")
+            return
+
+        lines = [f"失败信号共 {summary.get('failed_total', 0)} 个"]
+        markets = summary.get("top_market_regimes", [])
+        if markets:
+            lines.append("市场环境: " + " | ".join(f"{item['label']} {item['count']}个" for item in markets))
+        roots = summary.get("top_root_causes", [])
+        if roots:
+            lines.append("Top根因: " + " | ".join(f"{item['label']} {item['count']}次" for item in roots))
+        tags = summary.get("top_tags", [])
+        if tags:
+            lines.append("Top标签: " + " | ".join(f"{item['label']} {item['count']}次" for item in tags))
+        strategies = summary.get("by_strategy", [])
+        if strategies:
+            lines.append("策略分布:")
+            for item in strategies:
+                lines.append(f"  • {item['strategy']}: 失败{item['failed']}个，主因 {item.get('top_cause') or '待归因'}")
+        self.failure_summary.setText("\n".join(lines))
+
+    def _reset_filters(self):
+        self.filter_strategy.setCurrentIndex(0)
+        self.filter_root_cause.setCurrentIndex(0)
+        self.filter_market.setCurrentIndex(0)
+        self.filter_result.setCurrentIndex(0)
+        self.filter_keyword.clear()
+
+    def _refresh_filter_options(self, records: list[dict]):
+        current_strategy = self.filter_strategy.currentText()
+        current_root = self.filter_root_cause.currentText()
+        current_market = self.filter_market.currentText()
+
+        strategies = sorted({(r.get("strategy") or "").strip() for r in records if (r.get("strategy") or "").strip()})
+        roots = sorted({(r.get("root_cause") or "").strip() for r in records if (r.get("root_cause") or "").strip()})
+        markets = sorted({(r.get("market_regime") or "").strip() for r in records if (r.get("market_regime") or "").strip()})
+
+        for combo, values, current in [
+            (self.filter_strategy, strategies, current_strategy),
+            (self.filter_root_cause, roots, current_root),
+            (self.filter_market, markets, current_market),
+        ]:
+            combo.blockSignals(True)
+            combo.clear()
+            combo.addItem("全部")
+            for value in values:
+                combo.addItem(value)
+            idx = combo.findText(current)
+            combo.setCurrentIndex(idx if idx >= 0 else 0)
+            combo.blockSignals(False)
+
+    def _apply_filters(self):
+        keyword = self.filter_keyword.text().strip().lower()
+        strategy = self.filter_strategy.currentText()
+        root_cause = self.filter_root_cause.currentText()
+        market = self.filter_market.currentText()
+        result_filter = self.filter_result.currentText()
+
+        filtered = []
+        for record in self._all_records_cache:
+            if strategy != "全部" and (record.get("strategy") or "") != strategy:
+                continue
+            if root_cause != "全部" and (record.get("root_cause") or "") != root_cause:
+                continue
+            if market != "全部" and (record.get("market_regime") or "") != market:
+                continue
+
+            correct = record.get("correct", -1)
+            if result_filter == "仅失败" and correct != 0:
+                continue
+            if result_filter == "仅正确" and correct != 1:
+                continue
+            if result_filter == "仅待验证" and correct != -1:
+                continue
+
+            if keyword:
+                haystack = " ".join([
+                    str(record.get("code", "")),
+                    str(record.get("name", "")),
+                    str(record.get("board", "")),
+                    str(record.get("strategy", "")),
+                    str(record.get("root_cause", "")),
+                    " ".join(record.get("failure_tags", []) or []),
+                ]).lower()
+                if keyword not in haystack:
+                    continue
+            filtered.append(record)
+
+        self._render_records(filtered)
+
     def _on_row_clicked(self, row, col):
         """点击行时显示分析详情。"""
         if not hasattr(self, "_records_cache") or row >= len(self._records_cache):
@@ -111,6 +258,10 @@ class TrendVerifyPanel(QWidget):
         score = r.get("score", 0)
         strategy = r.get("strategy", "SEPA")
         analysis = r.get("analysis", "")
+        root_cause = r.get("root_cause", "")
+        failure_tags = r.get("failure_tags", []) or []
+        improvement_hint = r.get("improvement_hint", "")
+        market_regime = r.get("market_regime", "")
 
         self.detail_title.setText(
             f"📋 {code} {name}  [{board}]  策略: {strategy}  "
@@ -133,6 +284,13 @@ class TrendVerifyPanel(QWidget):
         else:
             lines.append(f"【{strategy} 策略分析原因】暂无（点击「🦀 AI深度分析选中行」可触发AI分析）")
 
+        lines.append("")
+
+        lines.append("【结构化归因】")
+        lines.append(f"  • 根因: {root_cause or '待归因'}")
+        lines.append(f"  • 标签: {' / '.join(failure_tags) if failure_tags else '待归因'}")
+        lines.append(f"  • 市场环境: {market_regime or '未知'}")
+        lines.append(f"  • 改进建议: {improvement_hint or '待生成'}")
         lines.append("")
 
         # 走势数据汇总
@@ -160,6 +318,11 @@ class TrendVerifyPanel(QWidget):
         self._selected_row = row
 
     def update_records(self, records: list[dict]):
+        self._all_records_cache = list(records or [])
+        self._refresh_filter_options(self._all_records_cache)
+        self._apply_filters()
+
+    def _render_records(self, records: list[dict]):
         self._records_cache = records
         red = QColor("#ef5350")
         green = QColor("#26a69a")
@@ -205,6 +368,8 @@ class TrendVerifyPanel(QWidget):
                 _f(r.get("pnl_3d")), _f(r.get("pnl_5d")), _f(r.get("pnl_10d")),
                 _f(r.get("pnl_20d")), _f(r.get("pnl_60d")),
                 result_text,
+                r.get("root_cause", "") or "-",
+                " / ".join(r.get("failure_tags", []) or []) or "-",
                 r.get("analysis", "") or "-",
             ]
             for j, v in enumerate(vals):
@@ -244,7 +409,7 @@ class TrendVerifyPanel(QWidget):
                     else:
                         item.setForeground(gold)
                     item.setFont(QFont("", 10, QFont.Weight.Bold))
-                # 分析列左对齐（列16）
-                if j == 16:
+                # 归因/标签/分析列左对齐
+                if j in (16, 17, 18):
                     item.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
                 self.table.setItem(i, j, item)

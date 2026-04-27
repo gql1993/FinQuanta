@@ -1,0 +1,66 @@
+{
+  "title": "FinQuanta Alert Linkage",
+  "uid": "finquanta-alert-linkage",
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "tags": ["finquanta", "alerts", "ops"],
+  "templating": {
+    "list": [
+      {
+        "name": "obs_token",
+        "type": "textbox",
+        "label": "Observability Read Token",
+        "query": "",
+        "current": {
+          "text": "",
+          "value": ""
+        }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "title": "Current Alerts",
+      "type": "table",
+      "datasource": {"type": "yesoreyeram-infinity-datasource", "uid": "infinity"},
+      "targets": [
+        {
+          "type": "json",
+          "source": "url",
+          "url": "http://127.0.0.1:9000/api/observability/dashboard/panel-input?obs_token=${obs_token}",
+          "format": "table",
+          "root_selector": "data.alerts.current.alerts"
+        }
+      ]
+    },
+    {
+      "title": "Alert Dispatch Receipts",
+      "type": "table",
+      "datasource": {"type": "yesoreyeram-infinity-datasource", "uid": "infinity"},
+      "targets": [
+        {
+          "type": "json",
+          "source": "url",
+          "url": "http://127.0.0.1:9000/api/observability/dashboard/panel-input?obs_token=${obs_token}",
+          "format": "table",
+          "root_selector": "data.alerts.dispatch_receipts"
+        }
+      ]
+    },
+    {
+      "title": "Collector State",
+      "type": "stat",
+      "datasource": {"type": "yesoreyeram-infinity-datasource", "uid": "infinity"},
+      "targets": [
+        {
+          "type": "json",
+          "source": "url",
+          "url": "http://127.0.0.1:9000/api/observability/dashboard/panel-input?obs_token=${obs_token}",
+          "format": "table",
+          "root_selector": "data.collector.state"
+        }
+      ]
+    }
+  ]
+}

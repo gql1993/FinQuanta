@@ -1,4 +1,16 @@
 @echo off
+setlocal
+
+if not defined FINQUANTA_DB_BACKEND set FINQUANTA_DB_BACKEND=sqlite
+if not defined FINQUANTA_SQLITE_PATH set FINQUANTA_SQLITE_PATH=data_cache\quant.db
+
+echo Starting FinQuanta autonomous daemon...
+echo   DB_BACKEND=%FINQUANTA_DB_BACKEND%
+echo   SQLITE_PATH=%FINQUANTA_SQLITE_PATH%
+
+python -m desktop.daemon_scheduler
+
+@echo off
 title FinQuanta Daemon Scheduler
 echo ========================================
 echo   FinQuanta 后台守护调度器

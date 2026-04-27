@@ -99,7 +99,7 @@ class DashboardPanel(QWidget):
         comp_group = QGroupBox("六仓持仓摘要")
         cg = QGridLayout(comp_group)
         cg.setSpacing(6)
-        _headers = ["总资产", "浮动盈亏", "收益率", "持仓数", "可用现金", "胜率", "交易数", "总盈亏"]
+        _headers = ["总资产", "浮动盈亏", "收益率", "持仓数", "可用现金", "已平仓胜率", "浮盈占比", "交易数", "总盈亏"]
         cg.addWidget(QLabel(""), 0, 0)
         for j, h in enumerate(_headers):
             lbl = QLabel(h)
@@ -146,7 +146,7 @@ class DashboardPanel(QWidget):
             for mode in ["full_auto", "auto", "custom", "quantum"]:
                 c = comp.get(mode, {})
                 total_eq += c.get("equity", 0)
-                total_pnl += c.get("total_pnl", 0)
+                total_pnl += c.get("unrealized_pnl", c.get("total_pnl", 0))
                 total_pos += c.get("positions", 0)
                 total_cash += c.get("cash", 0)
 
@@ -170,7 +170,7 @@ class DashboardPanel(QWidget):
 
     def update_comparison(self, comp: dict, manual_summary: dict = None):
         """更新六仓摘要对比表（手动仓 + 5 AI 仓）。
-        列: 总资产, 浮动盈亏, 收益率, 持仓数, 可用现金, 胜率, 交易数, 总盈亏
+        列: 总资产, 浮动盈亏, 收益率, 持仓数, 可用现金, 已平仓胜率, 浮盈占比, 交易数, 总盈亏
         """
         def _color(lbl, v_str, color_cols=()):
             lbl.setText(v_str)
@@ -183,19 +183,22 @@ class DashboardPanel(QWidget):
         # 第 0 行：手动仓
         if manual_summary:
             eq = manual_summary.get("total_equity", 0)
-            pnl = manual_summary.get("unrealized_pnl", 0)
+            unrealized_pnl = manual_summary.get("unrealized_pnl", 0)
+            total_pnl = manual_summary.get("total_pnl", unrealized_pnl)
             ret = manual_summary.get("total_return", 0)
             n_pos = manual_summary.get("num_positions", 0)
             cash = manual_summary.get("cash", 0)
+            total_trades = manual_summary.get("total_trades", n_pos)
             vals = [
                 f"¥{eq:,.0f}",
-                f"¥{pnl:+,.0f}",
+                f"¥{unrealized_pnl:+,.0f}",
                 f"{ret:+.2f}%",
                 str(n_pos),
                 f"¥{cash:,.0f}",
                 "-",
-                str(n_pos),
-                f"¥{pnl:+,.0f}",
+                "-",
+                str(total_trades),
+                f"¥{total_pnl:+,.0f}",
             ]
             for j, v in enumerate(vals):
                 lbl = self.dash_comp_labels.get((0, j))
@@ -214,10 +217,10 @@ class DashboardPanel(QWidget):
             positions = c.get("positions", 0)
             cash = c.get("cash", 0)
             win_rate = c.get("win_rate", 0)
+            open_win_rate = c.get("open_win_rate", 0)
             trades = c.get("total_trades", 0)
 
-            # 浮动盈亏 = equity - initial
-            unrealized = eq - 1_000_000
+            unrealized = c.get("unrealized_pnl", c.get("total_pnl", eq - 1_000_000))
 
             vals = [
                 f"¥{eq:,.0f}",
@@ -226,6 +229,7 @@ class DashboardPanel(QWidget):
                 str(positions),
                 f"¥{cash:,.0f}",
                 f"{win_rate:.1f}%",
+                f"{open_win_rate:.1f}%",
                 str(trades),
                 f"¥{total_pnl:+,.0f}",
             ]

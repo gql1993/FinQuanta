@@ -6,6 +6,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFont, QColor
+from desktop.ui_tokens import APP_FONT
 
 
 class PortfolioPanel(QWidget):
@@ -14,7 +15,7 @@ class PortfolioPanel(QWidget):
         layout = QVBoxLayout(self)
 
         title = QLabel("💼 模拟仓管理")
-        title.setFont(QFont("", 16, QFont.Weight.Bold))
+        title.setFont(QFont("", APP_FONT["page_title"], QFont.Weight.Bold))
         layout.addWidget(title)
 
         summary_box = QGroupBox("账户总览")
@@ -26,7 +27,7 @@ class PortfolioPanel(QWidget):
         ]
         for name, r, c in items:
             lbl = QLabel(f"{name}: -")
-            lbl.setFont(QFont("", 12))
+            lbl.setFont(QFont("", APP_FONT["body"]))
             sg.addWidget(lbl, r, c)
             self.summary_labels[name] = lbl
         layout.addWidget(summary_box)
@@ -67,7 +68,7 @@ class PortfolioPanel(QWidget):
         ab = QHBoxLayout(self.action_bar)
         ab.setContentsMargins(0, 4, 0, 4)
         self.action_stock_label = QLabel("")
-        self.action_stock_label.setFont(QFont("", 11, QFont.Weight.Bold))
+        self.action_stock_label.setFont(QFont("", APP_FONT["caption"], QFont.Weight.Bold))
         self.action_stock_label.setStyleSheet("color:#4fc3f7;")
         ab.addWidget(self.action_stock_label)
 
@@ -100,7 +101,9 @@ class PortfolioPanel(QWidget):
 
         # AI 建议结果展示
         self.ai_suggest_label = QLabel("")
-        self.ai_suggest_label.setStyleSheet("color:#4fc3f7; font-size:12px; padding:4px;")
+        self.ai_suggest_label.setStyleSheet(
+            f"color:#4fc3f7; font-size:{APP_FONT['body']}px; padding:4px;"
+        )
         self.ai_suggest_label.setWordWrap(True)
         self.ai_suggest_label.setVisible(False)
 
@@ -140,7 +143,9 @@ class PortfolioPanel(QWidget):
         form.addWidget(self.buy_stop, 3, 1)
 
         self.btn_buy = QPushButton("买入")
-        self.btn_buy.setStyleSheet("background: #388e3c; font-size: 14px; padding: 10px;")
+        self.btn_buy.setStyleSheet(
+            f"background: #388e3c; font-size: {APP_FONT['section']}px; padding: 10px;"
+        )
         form.addWidget(self.btn_buy, 4, 0, 1, 2)
         self.buy_status = QLabel("")
         form.addWidget(self.buy_status, 5, 0, 1, 2)
@@ -173,7 +178,9 @@ class PortfolioPanel(QWidget):
         form.addWidget(self.sell_shares, 2, 1)
 
         self.btn_sell = QPushButton("卖出")
-        self.btn_sell.setStyleSheet("background: #d32f2f; font-size: 14px; padding: 10px;")
+        self.btn_sell.setStyleSheet(
+            f"background: #d32f2f; font-size: {APP_FONT['section']}px; padding: 10px;"
+        )
         form.addWidget(self.btn_sell, 3, 0, 1, 2)
         self.sell_status = QLabel("")
         form.addWidget(self.sell_status, 4, 0, 1, 2)

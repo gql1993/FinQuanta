@@ -2,8 +2,7 @@
 自动卖出引擎
 5 种卖出规则 + ATR 跟踪止损更新
 
-完全自主仓：自动执行卖出
-其他仓（AI推荐/自定义/量子）：只生成建议并推送，不自动执行
+完全自主仓、AI推荐仓、自定义仓、量子仓：交易时间内自动执行卖出
 
 规则优先级：
   1. 止损触发（现价 ≤ 止损线）→ 立即卖出
@@ -284,8 +283,8 @@ def check_add_position_signals(mode: str = "full_auto") -> list[dict]:
 def execute_auto_sell() -> dict:
     """
     执行自动卖出：
-    - full_auto: 直接卖出
-    - auto/custom/quantum: 生成建议并推送，不执行
+    - full_auto/auto/custom/quantum: 交易时间内直接卖出
+    - 非交易时间: 生成建议并推送，不执行
     返回: {"executed": [...], "suggested": [...]}
     """
     from desktop.ai_portfolio import sell, check_trading_time
@@ -339,8 +338,8 @@ def execute_auto_sell() -> dict:
         action = sig["action"]
         reason = f"{sig['rule']}: {sig['reason']}"
 
-        if mode == "full_auto" and not reject:
-            # 完全自主仓：自动执行
+        if mode in {"full_auto", "auto", "custom", "quantum"} and not reject:
+            # 自主仓与策略仓：卖出信号用于降风险，可自动执行。
             if action == "sell_half":
                 # 半仓卖出：先查当前股数
                 from desktop.ai_portfolio import get_state

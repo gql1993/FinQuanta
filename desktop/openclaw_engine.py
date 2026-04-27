@@ -27,6 +27,136 @@ from desktop.task_orchestrator import log_system_event, run_task
 _log = logging.getLogger("openclaw_engine")
 
 
+def _apply_execution_policy(decisions: list[dict], policy: dict | None) -> dict:
+    """
+    根据协调者下发策略过滤可执行决策。
+    policy 示例:
+      {
+        "allow_buy": True/False,
+        "allow_sell": True/False,
+        "allow_hold": True/False,
+        "max_buy_count": 1
+      }
+    """
+    policy = policy or {}
+    allow_buy = bool(policy.get("allow_buy", True))
+    allow_sell = bool(policy.get("allow_sell", True))
+    allow_hold = bool(policy.get("allow_hold", True))
+    max_buy_count = int(policy.get("max_buy_count", -1) or -1)
+
+    filtered: list[dict] = []
+    blocked: list[dict] = []
+    buy_count = 0
+
+    for item in decisions or []:
+        action = str(item.get("action", "") or "").lower()
+        should_keep = True
+        reason = ""
+        if action == "buy":
+            if not allow_buy:
+                should_keep = False
+                reason = "策略分流: 禁止买入"
+            elif max_buy_count >= 0 and buy_count >= max_buy_count:
+                should_keep = False
+                reason = "策略分流: 买入数量超限"
+            else:
+                buy_count += 1
+        elif action == "sell":
+            if not allow_sell:
+                should_keep = False
+                reason = "策略分流: 禁止卖出"
+        elif action == "hold":
+            if not allow_hold:
+                should_keep = False
+                reason = "策略分流: 禁止持有动作"
+
+        if should_keep:
+            filtered.append(item)
+        else:
+            blocked.append(
+                {
+                    "action": action,
+                    "code": item.get("code", ""),
+                    "name": item.get("name", ""),
+                    "price": item.get("price", 0),
+                    "shares": item.get("shares", 0),
+                    "reason": reason,
+                }
+            )
+
+    return {"decisions": filtered, "blocked": blocked}
+
+
+def _truncate_report_text(text: object, limit: int = 42) -> str:
+    value = " ".join(str(text or "").split())
+    if len(value) <= limit:
+        return value
+    return value[: max(1, limit - 3)].rstrip("，。；,.; ") + "..."
+
+
+def _format_report_clause(text: object, limit: int = 42) -> str:
+    value = _truncate_report_text(text, limit=limit).rstrip("，。；,.; ")
+    return f"{value}；" if value else "未填写原因；"
+
+
+def build_openclaw_push_report(results: dict | None = None, *, report_date: date | None = None) -> dict:
+    payload = results or {}
+    candidates = payload.get("candidates", []) or []
+    decisions = payload.get("decisions", []) or []
+    sentiment = payload.get("news_sentiment", {}) or {}
+    lines = [f"时间: {report_date or date.today()}", ""]
+
+    section = 1
+    if sentiment:
+        lines.append(f"{section}. 📰 舆情分析")
+        lines.append(
+            "　　"
+            + _format_report_clause(
+                f"新闻 {sentiment.get('total', 0)} 条，"
+                f"正面 {sentiment.get('positive', 0)} 条，"
+                f"负面 {sentiment.get('negative', 0)} 条",
+                limit=80,
+            )
+        )
+        lines.append("")
+        section += 1
+
+    if candidates:
+        lines.append(f"{section}. 📡 选股结果（共 {len(candidates)} 只候选）")
+        for i, item in enumerate(candidates[:5], 1):
+            lines.append(
+                f"　　({i}) {item.get('code', '')} {item.get('name', '')}  "
+                f"评分{item.get('score', '-')}  [{item.get('board', '')}]；"
+            )
+        if len(candidates) > 5:
+            lines.append(f"　　... 及其他 {len(candidates) - 5} 只；")
+        lines.append("")
+        section += 1
+
+    if decisions:
+        max_decisions = 8
+        labels = {"buy": "买入", "sell": "卖出", "hold": "持有"}
+        lines.append(f"{section}. 🤖 AI决策（共 {len(decisions)} 条）")
+        for i, item in enumerate(decisions[:max_decisions], 1):
+            action = labels.get(str(item.get("action", "") or "").lower(), item.get("action", ""))
+            reason = _format_report_clause(item.get("reason", ""), limit=46)
+            lines.append(f"　　({i}) {action} {item.get('code', '')} {item.get('name', '')}  {reason}")
+        if len(decisions) > max_decisions:
+            lines.append(f"　　... 及其他 {len(decisions) - max_decisions} 条决策；")
+        lines.append("")
+        section += 1
+
+    if payload.get("risk_summary"):
+        lines.append(f"{section}. 🛡️ 风控摘要")
+        lines.append(f"　　{_format_report_clause(payload.get('risk_summary'), limit=80)}")
+        lines.append("")
+
+    return {
+        "title": "🦀 OpenClaw智能报告",
+        "content": "\n".join(lines).strip(),
+    }
+
+
 def get_data_sources_status() -> list[dict]:
     """返回各数据源的状态摘要。"""
     repo = get_repo()
@@ -129,11 +259,99 @@ def run_full_pipeline(boards: list[str] = None, callback=None) -> dict:
     boards = boards or ["人工智能", "芯片", "量子科技"]
     results = {"steps": [], "candidates": [], "decisions": [], "errors": [],
                "news_sentiment": {}, "factor_scores": {}, "portfolio_weights": {}}
+    coordinator_cls = None
+    try:
+        from desktop.agents import CoordinatorAgent
 
-    def _step(idx, name, func):
+        coordinator_cls = CoordinatorAgent
+        results["coordinator"] = CoordinatorAgent.plan_pipeline(boards)
+        results["coordinator"]["routing"] = []
+    except Exception:
+        results["coordinator"] = {}
+
+    def _hydrate_candidates_from_last_scan(limit: int = 30) -> int:
+        if results.get("candidates"):
+            return 0
+        rows = get_kv_json("last_scan_results", []) or []
+        hydrated = []
+        for row in rows[: max(1, int(limit or 30))]:
+            if not isinstance(row, dict):
+                continue
+            code = str(row.get("代码", "") or row.get("code", "") or "").strip()
+            if not code:
+                continue
+            try:
+                score = int(float(row.get("评分", row.get("score", 0)) or 0))
+            except Exception:
+                score = 0
+            try:
+                price = float(row.get("价格", row.get("price", 0)) or 0)
+            except Exception:
+                price = 0.0
+            hydrated.append(
+                {
+                    "code": code,
+                    "name": row.get("名称", row.get("name", code)),
+                    "score": score,
+                    "price": price,
+                    "board": row.get("板块", row.get("board", "")),
+                    "strategy": row.get("策略", row.get("strategy", "last_scan")),
+                    "source": "last_scan_results",
+                }
+            )
+        if hydrated:
+            results["candidates"] = hydrated
+        return len(hydrated)
+
+    def _apply_orchestration(stage_key: str) -> dict:
+        if coordinator_cls is None or not stage_key:
+            return {}
+        try:
+            plan = coordinator_cls.inspect_stage_readiness(stage_key, results)
+            if not isinstance(plan, dict):
+                return {}
+        except Exception as e:
+            plan = {
+                "stage": stage_key,
+                "ready": True,
+                "mode": "inspect_failed",
+                "reason": f"编排检查失败，继续默认流程: {e}",
+                "actions": [],
+                "timestamp": datetime.now().isoformat(),
+            }
+        actions_done = []
+        for action in plan.get("actions", []) or []:
+            if not isinstance(action, dict):
+                continue
+            action_type = str(action.get("type", "") or "")
+            if action_type == "hydrate_last_scan_results":
+                count = _hydrate_candidates_from_last_scan(int(action.get("limit", 30) or 30))
+                item = dict(action)
+                item["status"] = "done" if count else "no_data"
+                item["count"] = count
+                actions_done.append(item)
+            elif action_type == "mark_degraded":
+                results["learning_degraded"] = True
+                item = dict(action)
+                item["status"] = "done"
+                actions_done.append(item)
+            else:
+                item = dict(action)
+                item["status"] = "noted"
+                actions_done.append(item)
+        if actions_done:
+            plan["actions_done"] = actions_done
+        orchestration = results.get("coordinator", {}).setdefault("orchestration", [])
+        if isinstance(orchestration, list):
+            orchestration.append(plan)
+        return plan
+
+    def _step(idx, name, func, stage_key: str = "", preflight: bool = True):
         t0 = time.time()
         if callback:
             callback(idx, "运行中", "-", "...")
+        if preflight:
+            _apply_orchestration(stage_key)
         try:
             summary = run_task(name, "openclaw_pipeline", func)
             elapsed = f"{(time.time()-t0)*1000:.0f}ms"
@@ -143,13 +361,124 @@ def run_full_pipeline(boards: list[str] = None, callback=None) -> dict:
             _log.info(f"pipeline step {idx}: {name} -> {summary}")
             log_system_event("openclaw", "pipeline", f"{name}完成", detail=str(summary)[:300])
         except Exception as e:
+            recovery = {"retry": False, "mode": "no_recovery", "reason": ""}
+            if coordinator_cls is not None:
+                try:
+                    recovery = coordinator_cls.recover_stage_failure(stage_key, name, str(e), results)
+                except Exception:
+                    recovery = {"retry": False, "mode": "no_recovery", "reason": ""}
+            recoveries = results.get("coordinator", {}).setdefault("recoveries", [])
+            if isinstance(recoveries, list):
+                recoveries.append(
+                    {
+                        "stage": stage_key,
+                        "name": name,
+                        "mode": recovery.get("mode", "no_recovery"),
+                        "reason": recovery.get("reason", ""),
+                        "error": str(e)[:160],
+                        "timestamp": datetime.now().isoformat(),
+                    }
+                )
+            if recovery.get("retry"):
+                try:
+                    retry_summary = run_task(f"{name}(恢复重试)", "openclaw_pipeline", func)
+                    elapsed = f"{(time.time()-t0)*1000:.0f}ms"
+                    summary = f"{retry_summary} | 协调者恢复: {recovery.get('reason', '')}"
+                    if callback:
+                        callback(idx, "完成", elapsed, summary)
+                    results["steps"].append({
+                        "name": name,
+                        "status": "ok",
+                        "elapsed": elapsed,
+                        "summary": summary,
+                        "recovered": True,
+                        "recovery_mode": recovery.get("mode", "retry_once"),
+                    })
+                    log_system_event("openclaw", "pipeline", f"{name}恢复成功", detail=summary[:300])
+                    return
+                except Exception as retry_exc:
+                    e = retry_exc
             elapsed = f"{(time.time()-t0)*1000:.0f}ms"
             if callback:
                 callback(idx, "失败", elapsed, str(e)[:50])
-            results["steps"].append({"name": name, "status": "error", "error": str(e)})
+            results["steps"].append({
+                "name": name,
+                "status": "error",
+                "error": str(e),
+                "recovery_mode": recovery.get("mode", "no_recovery"),
+                "recovery_reason": recovery.get("reason", ""),
+            })
             results["errors"].append(f"Step {idx} {name}: {e}")
             _log.error(f"pipeline step {idx} failed: {e}")
             log_system_event("openclaw", "pipeline", f"{name}失败", detail=str(e), level="error")
+
+    def _route(stage_key: str) -> dict:
+        if coordinator_cls is None:
+            return {"run": True, "mode": "normal", "reason": "未启用协调者，默认执行"}
+        try:
+            decision = coordinator_cls.route_stage(stage_key, results)
+            if not isinstance(decision, dict):
+                decision = {"run": True, "mode": "normal", "reason": "路由返回无效，已默认执行"}
+        except Exception as e:
+            decision = {"run": True, "mode": "normal", "reason": f"路由异常，已默认执行: {e}"}
+        routing = results.get("coordinator", {}).get("routing")
+        if isinstance(routing, list):
+            routing.append(
+                {
+                    "stage": stage_key,
+                    "run": bool(decision.get("run", True)),
+                    "mode": str(decision.get("mode", "normal") or "normal"),
+                    "reason": str(decision.get("reason", "") or ""),
+                    "timestamp": datetime.now().isoformat(),
+                }
+            )
+        return decision
+
+    def _step_routed(idx, stage_key, name, func):
+        _apply_orchestration(stage_key)
+        decision = _route(stage_key)
+        if not decision.get("run", True):
+            reason = str(decision.get("reason", "协调者分流跳过") or "协调者分流跳过")
+            mode = str(decision.get("mode", "skip") or "skip")
+            if stage_key == "s6":
+                blocked = [
+                    {
+                        "action": str(item.get("action", "") or "").lower(),
+                        "code": item.get("code", ""),
+                        "name": item.get("name", ""),
+                        "price": item.get("price", 0),
+                        "shares": item.get("shares", 0),
+                        "reason": reason,
+                    }
+                    for item in (results.get("decisions", []) or [])
+                ]
+                results["executed_decisions"] = []
+                results["execution_plan"] = {
+                    "mode": mode,
+                    "policy": decision.get("execution_policy", {}) if isinstance(decision, dict) else {},
+                    "blocked_count": len(blocked),
+                    "blocked": blocked,
+                }
+            if callback:
+                callback(idx, "跳过", "-", reason)
+            results["steps"].append(
+                {
+                    "name": name,
+                    "status": "ok",
+                    "elapsed": "0ms",
+                    "summary": f"⏭ [{mode}] {reason}",
+                    "skipped": True,
+                    "route_mode": mode,
+                    "route_reason": reason,
+                }
+            )
+            _log.info(f"pipeline step {idx}: {name} -> skipped ({mode}) {reason}")
+            log_system_event("openclaw", "pipeline", f"{name}跳过", detail=reason)
+            return
+        route_runtime = results.setdefault("_route_runtime", {})
+        if isinstance(route_runtime, dict):
+            route_runtime[stage_key] = decision
+        _step(idx, name, func, stage_key=stage_key, preflight=False)
 
     # ═══ S1: 感知层 — 多源数据采集 ═══
     def _s1():
@@ -321,10 +650,16 @@ def run_full_pipeline(boards: list[str] = None, callback=None) -> dict:
     def _s3():
         try:
             from desktop.agents import run_multi_agent_cycle
-            ma_result = run_multi_agent_cycle(boards=boards, mode="auto", execute=False)
+            ma_result = run_multi_agent_cycle(boards=boards, mode="auto", execute=False, persist_memory=False)
             decisions = ma_result.get("decisions", [])
             results["decisions"] = decisions
+            results["raw_decisions"] = ma_result.get("raw_decisions", [])
+            results["verification"] = ma_result.get("verification", {})
+            results["decision_guardrails"] = ma_result.get("decision_guardrails", {})
             results["agent_steps"] = ma_result.get("steps", [])
+            results["agent_trace"] = ma_result.get("agent_trace", [])
+            results["agent_trace_context"] = ma_result.get("trace", {})
+            results["analysis"] = ma_result.get("analysis", "")
             analysis = ma_result.get("analysis", "")[:120]
             return f"{len(decisions)}条决策(多智能体) {analysis}"
         except Exception as e:
@@ -366,48 +701,57 @@ def run_full_pipeline(boards: list[str] = None, callback=None) -> dict:
 
     # ═══ S5: 全面风控检查 ═══
     def _s5():
-        from desktop.ai_portfolio import get_state
-        warnings = []
+        from desktop.agents import RiskAgent
 
-        for mode, label in [("auto", "半自主"), ("full_auto", "完全自主")]:
-            state = get_state(mode)
-            n_pos = len(state["positions"])
-            cash_ratio = state["cash"] / max(state["initial_capital"], 1) * 100
-
-            if n_pos >= 10:
-                warnings.append(f"{label}持仓{n_pos}≥10")
-            if cash_ratio < 10:
-                warnings.append(f"{label}现金{cash_ratio:.0f}%<10%")
-
-            # VaR 检查（从缓存读取）
-            try:
-                risk = get_kv_json("portfolio_risk")
-                if isinstance(risk, dict):
-                    var95 = abs(risk.get("var95", 0))
-                    if var95 > 100000:
-                        warnings.append(f"VaR95=¥{var95:,.0f}过高")
-                    dd = abs(risk.get("drawdown", 0))
-                    if dd > 0.1:
-                        warnings.append(f"回撤{dd:.1%}超10%")
-            except Exception:
-                pass
-
-        # 新闻情绪检查
-        sentiment = results.get("news_sentiment", {})
-        if sentiment.get("ratio", 0.5) < 0.3:
-            warnings.append(f"舆情偏空(正面率{sentiment['ratio']:.0%})")
-
-        if warnings:
-            return f"⚠ {'; '.join(warnings)}"
-        return "✅ 全部通过"
+        risk_report = RiskAgent.assess_openclaw(results)
+        results["risk_report"] = risk_report
+        results["risk_summary"] = risk_report.get("summary", "✅ 全部通过")
+        return results["risk_summary"]
 
     # ═══ S6: 执行交易 ═══
     def _s6():
         decisions = results.get("decisions", [])
         if not decisions:
             return "无待执行指令"
-        from desktop.ai_trader import execute_ai_decisions
-        exec_results = execute_ai_decisions(decisions, mode="auto")
+        route_runtime = results.get("_route_runtime", {})
+        route_payload = route_runtime.get("s6", {}) if isinstance(route_runtime, dict) else {}
+        policy = route_payload.get("execution_policy", {}) if isinstance(route_payload, dict) else {}
+        policy_result = _apply_execution_policy(decisions, policy if isinstance(policy, dict) else {})
+        executable = policy_result.get("decisions", [])
+        blocked_by_policy = policy_result.get("blocked", [])
+        results["execution_plan"] = {
+            "mode": route_payload.get("mode", "normal") if isinstance(route_payload, dict) else "normal",
+            "policy": policy if isinstance(policy, dict) else {},
+            "blocked_count": len(blocked_by_policy),
+            "blocked": blocked_by_policy,
+        }
+        try:
+            from desktop.agents import ApprovalAgent
+
+            approval = ApprovalAgent.review_decisions(executable, mode="auto")
+            results["approval_report"] = approval
+            executable = approval.get("approved_decisions", executable)
+            if approval.get("rejected_decisions"):
+                results["execution_plan"]["approval_rejected"] = approval.get("rejected_decisions", [])
+                results["execution_plan"]["approval_rejected_count"] = len(approval.get("rejected_decisions", []) or [])
+        except Exception as e:
+            results["approval_report"] = {"summary": f"审批跳过: {e}", "approved_decisions": executable}
+        results["executed_decisions"] = executable
+        if not executable:
+            return f"策略分流后无待执行指令(拦截{len(blocked_by_policy)}条)"
+        from desktop.ai_trader import execute_ai_decisions, execute_sell_signals_across_modes
+        exec_results = execute_ai_decisions(executable, mode="auto")
+        cross_mode_sells = execute_sell_signals_across_modes(executable, modes=("custom", "quantum"))
+        if cross_mode_sells:
+            exec_results.extend(cross_mode_sells)
+            results["cross_mode_sell_results"] = cross_mode_sells
+        approval_report = results.get("approval_report", {}) or {}
+        rejected_count = len(approval_report.get("rejected_decisions", []) or [])
+        if blocked_by_policy or rejected_count:
+            return (
+                f"{len(exec_results)} 条执行完成，"
+                f"策略分流拦截 {len(blocked_by_policy)} 条，审批拒绝 {rejected_count} 条"
+            )
         return f"{len(exec_results)} 条执行完成"
 
     # ═══ S7: 推送通知 ═══
@@ -415,42 +759,17 @@ def run_full_pipeline(boards: list[str] = None, callback=None) -> dict:
         candidates = results.get("candidates", [])
         decisions = results.get("decisions", [])
         sentiment = results.get("news_sentiment", {})
-
-        lines = [f"🦀 OpenClaw 智能报告", f"　　时间: {date.today()}", ""]
-
-        section = 1
-        if sentiment:
-            lines.append(f"{section}. 📰 舆情分析")
-            lines.append(f"　　新闻 {sentiment.get('total',0)} 条，"
-                         f"正面 {sentiment.get('positive',0)} 条，"
-                         f"负面 {sentiment.get('negative',0)} 条")
-            lines.append("")
-            section += 1
-
-        if candidates:
-            lines.append(f"{section}. 📡 选股结果（共 {len(candidates)} 只候选）")
-            for i, c in enumerate(candidates[:5], 1):
-                lines.append(f"　　({i}) {c['code']} {c['name']}  "
-                             f"评分{c['score']}  [{c.get('board','')}]")
-            if len(candidates) > 5:
-                lines.append(f"　　... 及其他 {len(candidates)-5} 只")
-            lines.append("")
-            section += 1
-
-        if decisions:
-            lines.append(f"{section}. 🤖 AI决策（共 {len(decisions)} 条）")
-            labels = {"buy": "买入", "sell": "卖出", "hold": "持有"}
-            for i, d in enumerate(decisions[:5], 1):
-                action = labels.get(d.get("action", ""), d.get("action", ""))
-                lines.append(f"　　({i}) {action} {d.get('code','')} {d.get('name','')}"
-                             f"  {d.get('reason','')[:25]}")
-            lines.append("")
-            section += 1
-
-        msg = "\n".join(lines)
+        report = build_openclaw_push_report(
+            {
+                "candidates": candidates,
+                "decisions": decisions,
+                "news_sentiment": sentiment,
+                "risk_summary": results.get("risk_summary", ""),
+            }
+        )
         try:
             from signal_push import push_signal
-            push_signal("🦀 OpenClaw智能报告", msg)
+            push_signal(report["title"], report["content"])
             return "推送成功"
         except Exception:
             return "推送跳过"
@@ -460,15 +779,26 @@ def run_full_pipeline(boards: list[str] = None, callback=None) -> dict:
         try:
             from desktop.trend_verify import record_signals
             candidates = results.get("candidates", [])
+            routed_recorded = 0
             if candidates:
                 signals = [{"代码": c["code"], "名称": c["name"],
                            "评分": str(c["score"]), "价格": str(c.get("price", 0)),
                            "板块": c.get("board", "")}
                            for c in candidates[:10]]
                 record_signals(signals)
+            try:
+                from desktop.trend_verify import record_routed_blocked_decisions
+
+                routed_recorded = record_routed_blocked_decisions(
+                    (results.get("execution_plan", {}) or {}).get("blocked", []) or [],
+                    raw_decisions=results.get("raw_decisions", []) or [],
+                )
+            except Exception:
+                routed_recorded = 0
             from desktop.agents import calibrate_decisions
             calibrate_decisions(5)
-            return f"记录{min(len(candidates), 10)}个信号，校准完成"
+            suffix = f"，分流复盘{routed_recorded}个" if routed_recorded else ""
+            return f"记录{min(len(candidates), 10)}个信号{suffix}，校准完成"
         except Exception as e:
             return f"部分完成: {e}"
 
@@ -482,15 +812,41 @@ def run_full_pipeline(boards: list[str] = None, callback=None) -> dict:
         except Exception as e:
             return f"学习跳过: {e}"
 
-    _step(0, "感知采集(行情+新闻+NLP)", _s1)
-    _step(1, "因子研究(多因子+学习权重)", _s2)
-    _step(2, "多智能体协同研判", _s3)
-    _step(3, "仓位优化(组合优化器)", _s4)
-    _step(4, "全面风控(VaR+回撤+舆情)", _s5)
-    _step(5, "执行交易", _s6)
-    _step(6, "智能推送", _s7)
-    _step(7, "归因记录", _s8)
-    _step(8, "自主学习进化", _s9)
+    _step(0, "感知采集(行情+新闻+NLP)", _s1, stage_key="s1")
+    _step(1, "因子研究(多因子+学习权重)", _s2, stage_key="s2")
+    _step(2, "多智能体协同研判", _s3, stage_key="s3")
+    _step_routed(3, "s4", "仓位优化(组合优化器)", _s4)
+    _step(4, "全面风控(VaR+回撤+舆情)", _s5, stage_key="s5")
+    _step_routed(5, "s6", "执行交易", _s6)
+    try:
+        from core.ai.decision_memory import save_decision_memory
+
+        save_decision_memory(
+            {
+                "timestamp": datetime.now().isoformat(),
+                "mode": "auto",
+                "steps": results.get("agent_steps", []),
+                "decisions": results.get("decisions", []),
+                "executed_decisions": results.get("executed_decisions", results.get("decisions", [])),
+                "raw_decisions": results.get("raw_decisions", []),
+                "analysis": results.get("analysis", ""),
+                "verification": results.get("verification", {}),
+                "decision_guardrails": results.get("decision_guardrails", {}),
+                "execution_plan": results.get("execution_plan", {}),
+            }
+        )
+    except Exception as e:
+        results["errors"].append(f"决策记忆保存失败: {e}")
+    _step_routed(6, "s7", "智能推送", _s7)
+    _step_routed(7, "s8", "归因记录", _s8)
+    _step_routed(8, "s9", "自主学习进化", _s9)
+
+    try:
+        from desktop.agents import CoordinatorAgent
+
+        results["coordinator"]["execution"] = CoordinatorAgent.summarize_pipeline(results)
+    except Exception:
+        pass
 
     return results
 

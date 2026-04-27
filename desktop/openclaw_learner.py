@@ -100,26 +100,133 @@ def collect_scan_performance() -> dict:
 
 def collect_ai_decision_performance() -> dict:
     """采集 AI 决策历史表现。"""
-    repo = get_repo()
-    result = {"total": 0, "correct": 0, "accuracy": 0, "avg_pnl": 0, "by_mode": {}}
+    from core.repositories.decision_repo import DecisionRepository
+
+    decision_repo = DecisionRepository()
+    result = {
+        "total": 0,
+        "correct": 0,
+        "accuracy": 0,
+        "avg_pnl": 0,
+        "by_mode": {},
+        "verification_effectiveness": {
+            "blocked_buy_count": 0,
+            "avoided_losses": 0,
+            "missed_gains": 0,
+            "annotated_buy_count": 0,
+            "verified_candidates": 0,
+            "questionable_candidates": 0,
+            "rejected_candidates": 0,
+        },
+        "coordinator_effectiveness": {
+            "routed_blocked_count": 0,
+            "avoided_losses": 0,
+            "missed_gains": 0,
+            "sell_only_count": 0,
+            "limit_buy_count": 0,
+            "observe_only_count": 0,
+        },
+    }
     try:
-        rows = repo.fetchall("""
-            SELECT mode, COUNT(*) as total,
-                   SUM(CASE WHEN correct=1 THEN 1 ELSE 0 END) as wins,
-                   AVG(pnl_5d) as avg_pnl
-            FROM ai_decision_memory WHERE calibrated=1
-            GROUP BY mode
-        """, ())
-        for mode, total, wins, avg_pnl in rows:
-            acc = wins / total * 100 if total > 0 else 0
-            result["by_mode"][mode or "auto"] = {
-                "total": total, "correct": wins,
-                "accuracy": round(acc, 1), "avg_pnl": round(avg_pnl or 0, 2),
-            }
-            result["total"] += total
-            result["correct"] += wins
+        rows = decision_repo.get_recent_calibrated_memories(limit=120)
+        for row in rows:
+            _, mode, actual_results_json, verification_json, guardrail_json = row[:5]
+            execution_plan_json = row[5] if len(row) > 5 else ""
+            mode_key = mode or "auto"
+            actual_results = decision_repo._load_json(actual_results_json, {})
+            verification = decision_repo._load_json(verification_json, {})
+            guardrails = decision_repo._load_json(guardrail_json, {})
+            execution_plan = decision_repo._load_json(execution_plan_json, {})
+
+            executed = []
+            blocked = []
+            routed_blocked = []
+            if isinstance(actual_results, list):
+                executed = actual_results
+            elif isinstance(actual_results, dict):
+                executed = actual_results.get("executed_buys", []) or []
+                blocked = actual_results.get("blocked_buys", []) or []
+                routed_blocked = actual_results.get("routed_blocked_buys", []) or []
+
+            bucket = result["by_mode"].setdefault(
+                mode_key,
+                {
+                    "total": 0,
+                    "correct": 0,
+                    "accuracy": 0,
+                    "avg_pnl": 0,
+                    "_pnl_values": [],
+                    "blocked_buy_count": 0,
+                    "avoided_losses": 0,
+                    "missed_gains": 0,
+                    "routed_blocked_count": 0,
+                    "routed_avoided_losses": 0,
+                    "routed_missed_gains": 0,
+                },
+            )
+
+            for item in executed:
+                bucket["total"] += 1
+                result["total"] += 1
+                if item.get("correct"):
+                    bucket["correct"] += 1
+                    result["correct"] += 1
+                try:
+                    pnl = float(item.get("pnl_pct", 0) or 0)
+                    bucket["_pnl_values"].append(pnl)
+                except (TypeError, ValueError):
+                    pass
+
+            bucket["blocked_buy_count"] += len(blocked)
+            bucket["avoided_losses"] += sum(1 for item in blocked if not item.get("correct"))
+            bucket["missed_gains"] += sum(1 for item in blocked if item.get("correct"))
+            bucket["routed_blocked_count"] += len(routed_blocked)
+            bucket["routed_avoided_losses"] += sum(1 for item in routed_blocked if not item.get("correct"))
+            bucket["routed_missed_gains"] += sum(1 for item in routed_blocked if item.get("correct"))
+
+            result["verification_effectiveness"]["blocked_buy_count"] += len(blocked)
+            result["verification_effectiveness"]["avoided_losses"] += sum(1 for item in blocked if not item.get("correct"))
+            result["verification_effectiveness"]["missed_gains"] += sum(1 for item in blocked if item.get("correct"))
+            result["verification_effectiveness"]["annotated_buy_count"] += int(guardrails.get("annotated_buy_count", 0) or 0)
+            result["verification_effectiveness"]["verified_candidates"] += int(verification.get("verified_count", 0) or 0)
+            result["verification_effectiveness"]["questionable_candidates"] += int(verification.get("questionable_count", 0) or 0)
+            result["verification_effectiveness"]["rejected_candidates"] += int(verification.get("rejected_count", 0) or 0)
+            result["coordinator_effectiveness"]["routed_blocked_count"] += len(routed_blocked)
+            result["coordinator_effectiveness"]["avoided_losses"] += sum(1 for item in routed_blocked if not item.get("correct"))
+            result["coordinator_effectiveness"]["missed_gains"] += sum(1 for item in routed_blocked if item.get("correct"))
+            plan_mode = str(execution_plan.get("mode", "") or "")
+            if plan_mode in {"sell_only", "limit_buy", "observe_only"}:
+                result["coordinator_effectiveness"][f"{plan_mode}_count"] += 1
+
+        for mode_key, bucket in result["by_mode"].items():
+            total = bucket["total"]
+            correct = bucket["correct"]
+            pnl_values = bucket.pop("_pnl_values", [])
+            bucket["accuracy"] = round(correct / total * 100, 1) if total > 0 else 0
+            bucket["avg_pnl"] = round(float(np.mean(pnl_values)), 2) if pnl_values else 0
+
         if result["total"] > 0:
             result["accuracy"] = round(result["correct"] / result["total"] * 100, 1)
+
+        all_pnls = []
+        for bucket in result["by_mode"].values():
+            if bucket["total"] > 0:
+                all_pnls.append(bucket["avg_pnl"])
+        if all_pnls:
+            result["avg_pnl"] = round(float(np.mean(all_pnls)), 2)
+
+        eff = result["verification_effectiveness"]
+        blocked_total = eff["blocked_buy_count"]
+        if blocked_total > 0:
+            eff["avoided_loss_rate"] = round(eff["avoided_losses"] / blocked_total * 100, 1)
+        else:
+            eff["avoided_loss_rate"] = 0.0
+        coord = result["coordinator_effectiveness"]
+        routed_total = coord["routed_blocked_count"]
+        if routed_total > 0:
+            coord["avoided_loss_rate"] = round(coord["avoided_losses"] / routed_total * 100, 1)
+        else:
+            coord["avoided_loss_rate"] = 0.0
     except Exception as e:
         _log.warning(f"collect ai perf: {e}")
     return result
@@ -143,6 +250,41 @@ def collect_portfolio_performance() -> dict:
     except Exception as e:
         _log.warning(f"collect portfolio perf: {e}")
         return {}
+
+
+def _build_verification_effect_summary(ai_perf: dict) -> str:
+    eff = (ai_perf or {}).get("verification_effectiveness", {}) or {}
+    blocked = int(eff.get("blocked_buy_count", 0) or 0)
+    avoided = int(eff.get("avoided_losses", 0) or 0)
+    missed = int(eff.get("missed_gains", 0) or 0)
+    annotated = int(eff.get("annotated_buy_count", 0) or 0)
+    verified = int(eff.get("verified_candidates", 0) or 0)
+    questionable = int(eff.get("questionable_candidates", 0) or 0)
+    rejected = int(eff.get("rejected_candidates", 0) or 0)
+    avoided_rate = float(eff.get("avoided_loss_rate", 0) or 0)
+
+    return (
+        f"验证层统计：通过候选{verified}个，存疑候选{questionable}个，高风险候选{rejected}个；"
+        f"拦截买入{blocked}次，避免亏损{avoided}次，错过上涨{missed}次，"
+        f"避免亏损率{avoided_rate:.1f}%，存疑放行{annotated}次。"
+    )
+
+
+def _build_coordinator_effect_summary(ai_perf: dict) -> str:
+    eff = (ai_perf or {}).get("coordinator_effectiveness", {}) or {}
+    routed = int(eff.get("routed_blocked_count", 0) or 0)
+    avoided = int(eff.get("avoided_losses", 0) or 0)
+    missed = int(eff.get("missed_gains", 0) or 0)
+    avoided_rate = float(eff.get("avoided_loss_rate", 0) or 0)
+    sell_only = int(eff.get("sell_only_count", 0) or 0)
+    limit_buy = int(eff.get("limit_buy_count", 0) or 0)
+    observe_only = int(eff.get("observe_only_count", 0) or 0)
+
+    return (
+        f"协调者分流统计：分流拦截{routed}次，避免亏损{avoided}次，错过上涨{missed}次，"
+        f"避免亏损率{avoided_rate:.1f}%；sell_only {sell_only}次，"
+        f"limit_buy {limit_buy}次，observe_only {observe_only}次。"
+    )
 
 
 # ═══════════════════════════════════════
@@ -205,6 +347,71 @@ def evaluate_and_learn() -> dict:
             "finding": f"总决策{ai_perf['total']}次, 准确率{ai_perf['accuracy']:.0f}%",
         })
 
+        eff = ai_perf.get("verification_effectiveness", {})
+        blocked = eff.get("blocked_buy_count", 0)
+        if blocked > 0:
+            avoided = eff.get("avoided_losses", 0)
+            missed = eff.get("missed_gains", 0)
+            learnings.append({
+                "module": "验证守门",
+                "finding": f"拦截买入{blocked}次，避免亏损{avoided}次，错过上涨{missed}次",
+                "weight": round(eff.get("avoided_loss_rate", 0), 1),
+            })
+            repo.execute(
+                "INSERT INTO openclaw_learning (timestamp,module,metric,value,detail) "
+                "VALUES (?,?,?,?,?)",
+                (
+                    now,
+                    "verification",
+                    "blocked_buy_effectiveness",
+                    eff.get("avoided_loss_rate", 0),
+                    json.dumps(eff, ensure_ascii=False),
+                ),
+            )
+        coord_eff = ai_perf.get("coordinator_effectiveness", {})
+        routed = coord_eff.get("routed_blocked_count", 0)
+        if routed > 0:
+            avoided = coord_eff.get("avoided_losses", 0)
+            missed = coord_eff.get("missed_gains", 0)
+            learnings.append({
+                "module": "协调分流",
+                "finding": f"分流拦截{routed}次，避免亏损{avoided}次，错过上涨{missed}次",
+                "weight": round(coord_eff.get("avoided_loss_rate", 0), 1),
+            })
+            repo.execute(
+                "INSERT INTO openclaw_learning (timestamp,module,metric,value,detail) "
+                "VALUES (?,?,?,?,?)",
+                (
+                    now,
+                    "coordinator",
+                    "routing_effectiveness",
+                    coord_eff.get("avoided_loss_rate", 0),
+                    json.dumps(coord_eff, ensure_ascii=False),
+                ),
+            )
+            try:
+                from desktop.agents import adapt_coordinator_policy_from_learning
+
+                adaptation = adapt_coordinator_policy_from_learning(ai_perf)
+                learnings.append({
+                    "module": "协调分流参数",
+                    "finding": adaptation.get("reason", ""),
+                    "weight": adaptation.get("config", {}).get("limit_buy_sentiment_ratio", 0),
+                })
+                repo.execute(
+                    "INSERT INTO openclaw_learning (timestamp,module,metric,value,detail) "
+                    "VALUES (?,?,?,?,?)",
+                    (
+                        now,
+                        "coordinator",
+                        "policy_adaptation",
+                        1 if adaptation.get("changed") else 0,
+                        json.dumps(adaptation, ensure_ascii=False, default=str),
+                    ),
+                )
+            except Exception as e:
+                _log.warning(f"adapt coordinator policy: {e}")
+
     # ── 学习3: 仓位表现对比 ──
     if portfolio_perf:
         best_mode = max(portfolio_perf, key=lambda m: portfolio_perf[m].get("return_pct", -999))
@@ -256,14 +463,20 @@ def generate_evolution_advice(learn_result: dict) -> str:
     try:
         from desktop.ai_trader import _call_llm
         context = json.dumps(learn_result, ensure_ascii=False, default=str)
+        verification_text = _build_verification_effect_summary(learn_result.get("ai_perf", {}))
+        coordinator_text = _build_coordinator_effect_summary(learn_result.get("ai_perf", {}))
         prompt = (
             f"以下是量化交易系统各模块的历史表现数据：\n{context}\n\n"
+            f"其中验证守门效果摘要如下：\n{verification_text}\n\n"
+            f"其中协调者分流效果摘要如下：\n{coordinator_text}\n\n"
             f"请分析：\n"
             f"1. 哪些选股策略表现好/差？建议如何调整策略权重？\n"
-            f"2. AI 决策的准确率如何？哪些决策模式值得加强？\n"
-            f"3. 5 个仓位中哪个最有效？为什么？\n"
-            f"4. 对完全自主仓提出具体优化建议（买入条件/仓位/止损/板块偏好）\n"
-            f"5. 下一步应该重点关注什么？\n\n"
+            f"2. AI 决策的准确率如何？验证守门是否过严或过松？\n"
+            f"3. 被拦截买入里，避免亏损和错过上涨的比例说明了什么？\n"
+            f"4. 5 个仓位中哪个最有效？为什么？\n"
+            f"5. 协调者分流策略是否过严或过松？sell_only/limit_buy/observe_only 如何调参？\n"
+            f"6. 对完全自主仓提出具体优化建议（买入条件/仓位/止损/板块偏好/验证阈值/分流策略）\n"
+            f"7. 下一步应该重点关注什么？\n\n"
             f"请用简洁、可执行的方式回答。"
         )
         return _call_llm(prompt, system="你是量化交易系统的自我进化引擎，负责分析历史数据并提出优化建议。")
@@ -300,6 +513,27 @@ def get_enhanced_full_auto_prompt() -> str:
         lines.append(f"\n⭐ 重点关注 {best[0]} 策略的候选股（准确率最高）")
         if worst[1]["accuracy"] < 30:
             lines.append(f"⚠️ 回避 {worst[0]} 策略的候选（准确率过低）")
+
+    ai_perf = collect_ai_decision_performance()
+    eff = (ai_perf or {}).get("verification_effectiveness", {}) or {}
+    if eff:
+        lines.append("\n== 验证守门学习反馈 ==")
+        lines.append(_build_verification_effect_summary(ai_perf))
+        avoided_rate = float(eff.get("avoided_loss_rate", 0) or 0)
+        if avoided_rate >= 60:
+            lines.append("✅ 验证守门整体有效，可继续优先回避高风险候选。")
+        elif eff.get("blocked_buy_count", 0) > 0 and eff.get("missed_gains", 0) >= eff.get("avoided_losses", 0):
+            lines.append("⚠️ 验证守门可能偏严，需适当放宽部分验证阈值。")
+
+    coord_eff = (ai_perf or {}).get("coordinator_effectiveness", {}) or {}
+    if coord_eff:
+        lines.append("\n== 协调者分流学习反馈 ==")
+        lines.append(_build_coordinator_effect_summary(ai_perf))
+        routed_rate = float(coord_eff.get("avoided_loss_rate", 0) or 0)
+        if routed_rate >= 60:
+            lines.append("✅ 协调者分流整体有效，可继续在弱风控环境下降速执行。")
+        elif coord_eff.get("routed_blocked_count", 0) > 0 and coord_eff.get("missed_gains", 0) >= coord_eff.get("avoided_losses", 0):
+            lines.append("⚠️ 协调者分流可能偏保守，需检查限买和只卖策略阈值。")
 
     lines.append("请将以上学习结果融入你的决策过程。")
     return "\n".join(lines)

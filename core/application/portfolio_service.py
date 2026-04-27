@@ -35,9 +35,21 @@ def get_portfolio_positions(refresh: bool = False) -> dict:
 def get_portfolio_recommendations(limit: int = 20) -> dict:
     latest = portfolio_repo.get_latest_auto_decision_memory()
     if not latest:
-        return {"timestamp": "", "analysis": "", "items": []}
+        return {
+            "timestamp": "",
+            "analysis": "",
+            "items": [],
+            "raw_items": [],
+            "verification_summary": {},
+            "guardrail_summary": {},
+            "execution_plan": {},
+        }
     return {
         "timestamp": latest.get("timestamp", ""),
         "analysis": latest.get("analysis", ""),
         "items": (latest.get("items") or [])[:limit],
+        "raw_items": (latest.get("raw_items") or [])[:limit],
+        "verification_summary": latest.get("verification_summary", {}) or {},
+        "guardrail_summary": latest.get("guardrail_summary", {}) or {},
+        "execution_plan": latest.get("execution_plan", {}) or {},
     }

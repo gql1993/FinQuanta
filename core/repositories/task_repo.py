@@ -29,8 +29,21 @@ class TaskRepository:
         title: str,
         detail: str = "",
         level: str = "info",
+        *,
+        trace_id: str = "",
+        decision_id: str = "",
+        metadata: dict | None = None,
     ) -> None:
-        append_system_event(source, category, title, detail=detail, level=level)
+        append_system_event(
+            source,
+            category,
+            title,
+            detail=detail,
+            level=level,
+            trace_id=trace_id,
+            decision_id=decision_id,
+            metadata=metadata,
+        )
 
     def log_task_run(
         self,

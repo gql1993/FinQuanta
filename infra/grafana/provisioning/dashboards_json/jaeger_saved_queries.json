@@ -1,0 +1,37 @@
+{
+  "name": "finquanta-jaeger-saved-queries",
+  "description": "Saved query hints for Jaeger UI / Explore workflows",
+  "queries": [
+    {
+      "title": "All FinQuanta Spans",
+      "service": "finquanta-api",
+      "tags": {
+        "status": "ok"
+      },
+      "lookback": "1h"
+    },
+    {
+      "title": "Task Workflow OpenClaw Chain",
+      "service": "finquanta-api",
+      "operation": "workflow.openclaw_pipeline",
+      "tags": {
+        "task_key": "pipeline"
+      },
+      "lookback": "6h"
+    },
+    {
+      "title": "Approval Errors",
+      "service": "finquanta-api",
+      "operation": "trade.approval",
+      "tags": {
+        "status": "error"
+      },
+      "lookback": "24h"
+    }
+  ],
+  "api_bridge": {
+    "trace_index": "/api/observability/traces/index",
+    "trace_detail": "/api/observability/traces/trace/{trace_id}",
+    "trace_otel_export": "/api/observability/traces/otel?trace_id={trace_id}"
+  }
+}

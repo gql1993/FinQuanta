@@ -16,6 +16,13 @@ logger = logging.getLogger(__name__)
 _PUSH_CONFIG_FILE = os.path.join("data_cache", "push_config.json")
 
 
+def _safe_int(value, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _load_push_config() -> dict:
     if os.path.exists(_PUSH_CONFIG_FILE):
         try:
@@ -47,7 +54,7 @@ def get_push_config() -> dict:
         "email_from": file_cfg.get("email_from") or os.environ.get("PUSH_EMAIL_FROM", ""),
         "email_password": file_cfg.get("email_password") or os.environ.get("PUSH_EMAIL_PASSWORD", ""),
         "email_smtp": file_cfg.get("email_smtp") or os.environ.get("PUSH_EMAIL_SMTP", "smtp.qq.com"),
-        "email_port": int(file_cfg.get("email_port") or os.environ.get("PUSH_EMAIL_PORT", "465")),
+        "email_port": _safe_int(file_cfg.get("email_port") or os.environ.get("PUSH_EMAIL_PORT", "465"), 465),
     }
 
 

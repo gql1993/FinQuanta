@@ -317,6 +317,18 @@ def get_log(mode: str = "auto", limit: int = 30) -> list[dict]:
     return [{"time": r[0], "action": r[1], "code": r[2], "detail": r[3]} for r in cur]
 
 
+def _get_trade_count(mode: str) -> int:
+    repo = get_repo()
+    row = repo.fetchone(
+        "SELECT COUNT(1) FROM ai_trade_log WHERE mode=? AND UPPER(action) IN ('BUY','SELL')",
+        (mode,),
+    )
+    try:
+        return int(row[0]) if row and row[0] is not None else 0
+    except (TypeError, ValueError):
+        return 0
+
+
 def get_comparison() -> dict:
     """获取四个仓的对比数据。"""
     auto = get_state("auto")
@@ -325,7 +337,7 @@ def get_comparison() -> dict:
     custom = get_state("custom")
     quantum = get_state("quantum")
 
-    def _calc(state, prices):
+    def _calc(state, prices, mode):
         mv = sum(prices.get(p["code"], p["entry_price"]) * p["shares"] for p in state["positions"])
         cost = sum(p["entry_price"] * p["shares"] for p in state["positions"])
         unrealized_pnl = mv - cost
@@ -338,16 +350,22 @@ def get_comparison() -> dict:
         closed = state["closed_trades"]
         realized_pnl = sum(t.get("pnl", 0) for t in closed)
         wins = sum(1 for t in closed if t.get("pnl", 0) > 0)
-        total_trades = len(closed) + len(state["positions"])
+        total_trades = _get_trade_count(mode)
         open_wins = sum(1 for p in state["positions"]
                         if prices.get(p["code"], p["entry_price"]) > p["entry_price"])
-        total_judged = len(closed) + len(state["positions"])
-        win_rate = (wins + open_wins) / total_judged * 100 if total_judged > 0 else 0
+        closed_trade_count = len(closed)
+        open_position_count = len(state["positions"])
+        win_rate = wins / closed_trade_count * 100 if closed_trade_count > 0 else 0
+        open_win_rate = open_wins / open_position_count * 100 if open_position_count > 0 else 0
         return {
             "equity": eq, "return_pct": ret, "cash": state["cash"],
             "positions": len(state["positions"]),
             "total_trades": total_trades,
             "win_rate": win_rate,
+            "open_win_rate": open_win_rate,
+            "closed_trade_count": closed_trade_count,
+            "realized_pnl": realized_pnl,
+            "unrealized_pnl": unrealized_pnl,
             "total_pnl": realized_pnl + unrealized_pnl,
         }
 
@@ -388,10 +406,10 @@ def get_comparison() -> dict:
             pass
 
     return {
-        "auto": _calc(auto, prices),
-        "manual": _calc(manual, prices),
-        "full_auto": _calc(full_auto, prices),
-        "custom": _calc(custom, prices),
-        "quantum": _calc(quantum, prices),
+        "auto": _calc(auto, prices, "auto"),
+        "manual": _calc(manual, prices, "manual"),
+        "full_auto": _calc(full_auto, prices, "full_auto"),
+        "custom": _calc(custom, prices, "custom"),
+        "quantum": _calc(quantum, prices, "quantum"),
         "prices": prices,
     }

@@ -1,0 +1,69 @@
+{
+  "title": "FinQuanta Trace Overview (Tempo)",
+  "uid": "finquanta-trace-overview",
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "tags": ["finquanta", "trace", "tempo"],
+  "templating": {
+    "list": [
+      {
+        "name": "obs_token",
+        "type": "textbox",
+        "label": "Observability Read Token",
+        "query": "",
+        "current": {
+          "text": "",
+          "value": ""
+        }
+      },
+      {
+        "name": "trace_id",
+        "type": "textbox",
+        "label": "Trace ID",
+        "query": "",
+        "current": {
+          "text": "",
+          "value": ""
+        }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "title": "Trace Index",
+      "type": "table",
+      "datasource": {"type": "yesoreyeram-infinity-datasource", "uid": "infinity"},
+      "targets": [
+        {
+          "type": "json",
+          "source": "url",
+          "url": "http://127.0.0.1:9000/api/observability/dashboard/panel-input?obs_token=${obs_token}",
+          "format": "table",
+          "root_selector": "data.trace.index"
+        }
+      ]
+    },
+    {
+      "title": "Trace Graph Nodes",
+      "type": "table",
+      "datasource": {"type": "yesoreyeram-infinity-datasource", "uid": "infinity"},
+      "targets": [
+        {
+          "type": "json",
+          "source": "url",
+          "url": "http://127.0.0.1:9000/api/observability/dashboard/panel-input?trace_id=${trace_id}&obs_token=${obs_token}",
+          "format": "table",
+          "root_selector": "data.trace.detail.graph.nodes"
+        }
+      ]
+    },
+    {
+      "title": "Tempo Query Hint",
+      "type": "text",
+      "options": {
+        "content": "Use trace_id from Trace Index and query Tempo by ID.\nAPI supports filtered OTEL export:\n`/api/observability/traces/otel?trace_id=<trace_id_hex>`"
+      }
+    }
+  ]
+}

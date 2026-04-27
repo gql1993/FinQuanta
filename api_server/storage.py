@@ -15,50 +15,39 @@ from __future__ import annotations
 
 import json
 import os
-import sqlite3
 from contextlib import contextmanager
-from typing import Any, Iterator
+from typing import Any
 
 from api_server.config import settings
 from core.repositories.base import BaseRepository
+from infrastructure.db.postgres import PostgresBackend
+from infrastructure.db.sqlite import SQLiteBackend
 
 
 class SQLiteRepository(BaseRepository):
     def __init__(self, db_path: str | None = None):
         self.db_path = db_path or settings.sqlite_path
+        self.backend = SQLiteBackend(self.db_path)
 
     @contextmanager
-    def conn(self) -> Iterator[sqlite3.Connection]:
-        conn = sqlite3.connect(self.db_path, timeout=10)
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
-        try:
+    def conn(self):
+        with self.backend.conn() as conn:
             yield conn
-            conn.commit()
-        finally:
-            conn.close()
 
     def fetchone(self, sql: str, params: tuple = ()) -> tuple | None:
-        with self.conn() as conn:
-            return conn.execute(sql, params).fetchone()
+        return self.backend.fetchone(sql, params)
 
     def fetchall(self, sql: str, params: tuple = ()) -> list[tuple]:
-        with self.conn() as conn:
-            return conn.execute(sql, params).fetchall()
+        return self.backend.fetchall(sql, params)
 
     def execute(self, sql: str, params: tuple = ()):
-        with self.conn() as conn:
-            conn.execute(sql, params)
+        self.backend.execute(sql, params)
 
     def executemany(self, sql: str, seq_of_params: list[tuple]):
-        if not seq_of_params:
-            return
-        with self.conn() as conn:
-            conn.executemany(sql, seq_of_params)
+        self.backend.executemany(sql, seq_of_params)
 
     def executescript(self, sql: str):
-        with self.conn() as conn:
-            conn.executescript(sql)
+        self.backend.executescript(sql)
 
     def kv_get(self, key: str, default=None):
         row = self.fetchone("SELECT value FROM kv_store WHERE key=?", (key,))
@@ -90,65 +79,27 @@ class PostgresRepository(BaseRepository):
     def __init__(self, dsn: str | None = None):
         self.dsn = dsn or settings.postgres_dsn
         self.persistent = os.environ.get("FINQUANTA_PG_PERSISTENT", "").strip().lower() in {"1", "true", "yes"}
-        self._shared_conn = None
-
-    def _connect(self):
-        if self.persistent and self._shared_conn is not None and not self._shared_conn.closed:
-            return self._shared_conn
-        if not self.dsn:
-            raise RuntimeError("FINQUANTA_POSTGRES_DSN is not configured.")
-        try:
-            import psycopg
-        except Exception as exc:
-            raise RuntimeError("psycopg is required for PostgreSQL backend.") from exc
-        conn = psycopg.connect(self.dsn)
-        if self.persistent:
-            self._shared_conn = conn
-        return conn
+        self.backend = PostgresBackend(self.dsn, persistent=self.persistent)
 
     @contextmanager
     def conn(self):
-        conn = self._connect()
-        try:
+        with self.backend.conn() as conn:
             yield conn
-            conn.commit()
-        finally:
-            if not self.persistent:
-                conn.close()
-
-    def _sql(self, sql: str) -> str:
-        return sql.replace("?", "%s")
 
     def fetchone(self, sql: str, params: tuple = ()):
-        with self.conn() as conn:
-            with conn.cursor() as cur:
-                cur.execute(self._sql(sql), params)
-                return cur.fetchone()
+        return self.backend.fetchone(sql, params)
 
     def fetchall(self, sql: str, params: tuple = ()):
-        with self.conn() as conn:
-            with conn.cursor() as cur:
-                cur.execute(self._sql(sql), params)
-                return cur.fetchall()
+        return self.backend.fetchall(sql, params)
 
     def execute(self, sql: str, params: tuple = ()):
-        with self.conn() as conn:
-            with conn.cursor() as cur:
-                cur.execute(self._sql(sql), params)
+        self.backend.execute(sql, params)
 
     def executemany(self, sql: str, seq_of_params: list[tuple]):
-        if not seq_of_params:
-            return
-        with self.conn() as conn:
-            with conn.cursor() as cur:
-                cur.executemany(self._sql(sql), seq_of_params)
+        self.backend.executemany(sql, seq_of_params)
 
     def executescript(self, sql: str):
-        statements = [stmt.strip() for stmt in sql.split(";") if stmt.strip()]
-        with self.conn() as conn:
-            with conn.cursor() as cur:
-                for stmt in statements:
-                    cur.execute(stmt)
+        self.backend.executescript(sql)
 
     def kv_get(self, key: str, default=None):
         row = self.fetchone("SELECT value FROM kv_store WHERE key=%s", (key,))
@@ -198,6 +149,8 @@ class CacheProvider:
 
 def get_repository() -> BaseRepository:
     if settings.db_backend == "postgres":
+        if not str(settings.postgres_dsn or "").strip():
+            raise RuntimeError("FINQUANTA_POSTGRES_DSN is required when FINQUANTA_DB_BACKEND=postgres")
         return PostgresRepository()
     return SQLiteRepository()
 

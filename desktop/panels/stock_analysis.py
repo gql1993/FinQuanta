@@ -8,6 +8,7 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFont, QColor
 import numpy as np
 import json
+from desktop.ui_tokens import APP_FONT
 
 
 class StockAnalysisPanel(QWidget):
@@ -16,7 +17,7 @@ class StockAnalysisPanel(QWidget):
         layout = QVBoxLayout(self)
 
         title = QLabel("📉 个股分析")
-        title.setFont(QFont("", 16, QFont.Weight.Bold))
+        title.setFont(QFont("", APP_FONT["page_title"], QFont.Weight.Bold))
         layout.addWidget(title)
 
         input_row = QHBoxLayout()
@@ -26,7 +27,9 @@ class StockAnalysisPanel(QWidget):
         input_row.addWidget(self.code_input)
 
         self.btn_analyze = QPushButton("分析")
-        self.btn_analyze.setStyleSheet("font-size: 14px; padding: 8px 20px;")
+        self.btn_analyze.setStyleSheet(
+            f"font-size: {APP_FONT['section']}px; padding: 8px 20px;"
+        )
         input_row.addWidget(self.btn_analyze)
 
         self.btn_refresh = QPushButton("🔄 强制刷新")
@@ -42,14 +45,14 @@ class StockAnalysisPanel(QWidget):
         layout.addLayout(input_row)
 
         self.header_label = QLabel("")
-        self.header_label.setFont(QFont("", 14, QFont.Weight.Bold))
+        self.header_label.setFont(QFont("", APP_FONT["section"], QFont.Weight.Bold))
         layout.addWidget(self.header_label)
 
         metrics = QHBoxLayout()
         self.metric_labels = {}
         for name in ["MA50", "MA150", "MA200", "52周高点", "52周低点", "RS评级"]:
             lbl = QLabel(f"{name}: -")
-            lbl.setStyleSheet("font-size: 12px;")
+            lbl.setStyleSheet(f"font-size: {APP_FONT['body']}px;")
             metrics.addWidget(lbl)
             self.metric_labels[name] = lbl
         layout.addLayout(metrics)
@@ -77,7 +80,7 @@ class StockAnalysisPanel(QWidget):
             btn.setCheckable(True)
             btn.setChecked(key == "daily")
             btn.setStyleSheet(
-                "QPushButton { padding:4px 14px; font-size:12px; background:#1a1a2e; color:#8b949e; "
+                f"QPushButton {{ padding:4px 14px; font-size:{APP_FONT['body']}px; background:#1a1a2e; color:#8b949e; "
                 "border:1px solid #30363d; border-radius:4px; }"
                 "QPushButton:checked { background:#1f6feb; color:#fff; border-color:#1f6feb; }"
                 "QPushButton:hover { background:#21262d; }"
@@ -107,7 +110,7 @@ class StockAnalysisPanel(QWidget):
         self._strategy_check_layout = QHBoxLayout()
         self._strategy_check_layout.setSpacing(8)
         lbl = QLabel("预测线：")
-        lbl.setStyleSheet("color: #888; font-size: 12px;")
+        lbl.setStyleSheet(f"color: #888; font-size: {APP_FONT['body']}px;")
         self._strategy_check_layout.addWidget(lbl)
         self._strategy_check_layout.addStretch()
         layout.addLayout(self._strategy_check_layout)
@@ -183,7 +186,9 @@ class StockAnalysisPanel(QWidget):
             color = self._pred_palette[idx % len(self._pred_palette)]
             cb = QCheckBox(name)
             cb.setChecked(True)
-            cb.setStyleSheet(f"color: {color}; font-size: 13px; font-weight: bold; padding: 1px 0;")
+            cb.setStyleSheet(
+                f"color: {color}; font-size: {APP_FONT['emphasis']}px; font-weight: bold; padding: 1px 0;"
+            )
             self._strategy_check_layout.addWidget(cb)
             self._strategy_checkboxes[name] = cb
             self._strategy_colors[name] = color
@@ -351,7 +356,7 @@ class StockAnalysisPanel(QWidget):
             html, body {{ margin:0; padding:0; width:100%; height:100%; overflow:hidden; background:#1a1a2e; }}
             #chart {{ width:100%; height:100%; }}
             /* zoom hint */
-            #zoom-hint {{ position:fixed; top:6px; right:8px; font-size:11px; color:#555;
+            #zoom-hint {{ position:fixed; top:6px; right:8px; font-size:{APP_FONT['caption']}px; color:#555;
                           pointer-events:none; z-index:99; }}
         </style>
         </head><body>
@@ -413,11 +418,11 @@ class StockAnalysisPanel(QWidget):
         ]
         for cond in conditions:
             lbl = QLabel(f"  ❓ {cond}")
-            lbl.setFont(QFont("", 12))
+            lbl.setFont(QFont("", APP_FONT["body"]))
             layout.addWidget(lbl)
             self.trend_checks[cond] = lbl
         self.trend_result_label = QLabel("")
-        self.trend_result_label.setFont(QFont("", 14, QFont.Weight.Bold))
+        self.trend_result_label.setFont(QFont("", APP_FONT["section"], QFont.Weight.Bold))
         layout.addWidget(self.trend_result_label)
         layout.addStretch()
         return w
@@ -463,7 +468,7 @@ class StockAnalysisPanel(QWidget):
             icon = "✅" if ok else "❌"
             self.trend_checks[label].setText(f"  {icon} {label}")
             color = "#4caf50" if ok else "#ef5350"
-            self.trend_checks[label].setStyleSheet(f"color: {color}; font-size: 12px;")
+            self.trend_checks[label].setStyleSheet(f"color: {color}; font-size: {APP_FONT['body']}px;")
         if passed:
             self.trend_result_label.setText("✅ 通过趋势模板！处于 Stage 2 上升阶段")
             self.trend_result_label.setStyleSheet("color: #4caf50;")

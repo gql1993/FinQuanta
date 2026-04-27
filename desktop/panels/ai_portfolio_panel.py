@@ -8,10 +8,34 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFont, QColor
 
+_AI_PORTFOLIO_THEME = {
+    "dark": {
+        "board_bg": "#161b22",
+        "board_border": "#30363d",
+        "text": "#e0e0e0",
+        "muted": "#8b949e",
+        "button_bg": "#16213e",
+        "button_border": "#33384d",
+        "button_hover": "#1a2744",
+        "accent": "#4fc3f7",
+    },
+    "light": {
+        "board_bg": "#ffffff",
+        "board_border": "#dddddd",
+        "text": "#333333",
+        "muted": "#666666",
+        "button_bg": "#f5f7fb",
+        "button_border": "#d6dbe6",
+        "button_hover": "#e9eef7",
+        "accent": "#1976d2",
+    },
+}
+
 
 class AIPortfolioPanel(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._theme = "dark"
         layout = QVBoxLayout(self)
 
         title = QLabel("🤖 AI 自主交易模拟仓")
@@ -66,20 +90,18 @@ class AIPortfolioPanel(QWidget):
 
         # 板块多选区
         board_frame = QFrame()
-        board_frame.setStyleSheet(
-            "QFrame { background:#161b22; border:1px solid #30363d; border-radius:6px; padding:6px; }"
-        )
+        self._board_frame = board_frame
         board_inner = QVBoxLayout(board_frame)
         board_inner.setContentsMargins(8, 4, 8, 4)
         board_inner.setSpacing(4)
         board_header = QHBoxLayout()
-        board_header.addWidget(QLabel("📂 选择板块（多选）:"))
+        board_title = QLabel("📂 选择板块（多选）:")
+        self._board_title = board_title
+        board_header.addWidget(board_title)
         self.btn_board_all = QPushButton("全选")
-        self.btn_board_all.setStyleSheet("padding:2px 8px; font-size:11px;")
         self.btn_board_all.clicked.connect(lambda: self._toggle_boards(True))
         board_header.addWidget(self.btn_board_all)
         self.btn_board_none = QPushButton("全不选")
-        self.btn_board_none.setStyleSheet("padding:2px 8px; font-size:11px;")
         self.btn_board_none.clicked.connect(lambda: self._toggle_boards(False))
         board_header.addWidget(self.btn_board_none)
         board_header.addStretch()
@@ -95,7 +117,6 @@ class AIPortfolioPanel(QWidget):
         ]
         for bn in _BOARDS:
             cb = QCheckBox(bn)
-            cb.setStyleSheet("font-size:12px; padding:2px 4px;")
             cb.setChecked(True)
             board_grid.addWidget(cb)
             self._board_checkboxes[bn] = cb
@@ -115,6 +136,7 @@ class AIPortfolioPanel(QWidget):
         tabs.addTab(self._build_history_tab(), "📋 交易日志")
         tabs.addTab(self._build_tracking_tab(), "📌 自定义仓跟踪")
         layout.addWidget(tabs)
+        self._apply_theme_styles()
 
     _PROVIDER_CONFIG = {
         "DeepSeek": {
@@ -158,6 +180,38 @@ class AIPortfolioPanel(QWidget):
         for cb in self._board_checkboxes.values():
             cb.setChecked(checked)
 
+    def set_theme(self, theme: str):
+        self._theme = "light" if str(theme).lower() == "light" else "dark"
+        self._apply_theme_styles()
+
+    def _apply_theme_styles(self):
+        palette = _AI_PORTFOLIO_THEME.get(self._theme, _AI_PORTFOLIO_THEME["dark"])
+        self._board_frame.setStyleSheet(
+            "QFrame { background:%s; border:1px solid %s; border-radius:6px; padding:6px; }"
+            % (palette["board_bg"], palette["board_border"])
+        )
+        self._board_title.setStyleSheet(
+            "color:%s; font-size:12px; font-weight:bold;" % palette["text"]
+        )
+        btn_style = (
+            "QPushButton { background:%s; color:%s; border:1px solid %s; border-radius:8px; padding:2px 8px; font-size:11px; }"
+            "QPushButton:hover { background:%s; color:%s; }"
+        ) % (
+            palette["button_bg"],
+            palette["text"],
+            palette["button_border"],
+            palette["button_hover"],
+            palette["accent"],
+        )
+        self.btn_board_all.setStyleSheet(btn_style)
+        self.btn_board_none.setStyleSheet(btn_style)
+        checkbox_style = (
+            "QCheckBox { color:%s; font-size:12px; padding:2px 4px; }"
+            "QCheckBox::indicator { width:14px; height:14px; }"
+        ) % palette["text"]
+        for cb in self._board_checkboxes.values():
+            cb.setStyleSheet(checkbox_style)
+
     def get_selected_boards(self) -> list[str]:
         return [bn for bn, cb in self._board_checkboxes.items() if cb.isChecked()]
 
@@ -176,7 +230,7 @@ class AIPortfolioPanel(QWidget):
         comp_box = QGroupBox("📊 双仓对比")
         cg = QGridLayout(comp_box)
         cg.addWidget(QLabel(""), 0, 0)
-        for j, h in enumerate(["总资产", "收益率", "胜率", "交易数", "总盈亏"]):
+        for j, h in enumerate(["总资产", "收益率", "已平仓胜率", "浮盈占比", "交易数", "总盈亏"]):
             lbl = QLabel(h)
             lbl.setFont(QFont("", 10, QFont.Weight.Bold))
             lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -187,7 +241,7 @@ class AIPortfolioPanel(QWidget):
             cg.addWidget(lbl, i + 1, 0)
         self.comp_labels = {}
         for i in range(4):
-            for j in range(5):
+            for j in range(6):
                 lbl = QLabel("-")
                 lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
                 lbl.setFont(QFont("", 11))
@@ -259,10 +313,14 @@ class AIPortfolioPanel(QWidget):
     def _build_decisions_tab(self) -> QWidget:
         w = QWidget()
         layout = QVBoxLayout(w)
+        self.decision_guard_label = QLabel("验证守门：待生成")
+        self.decision_guard_label.setStyleSheet("color:#8b949e; font-size:12px; padding:4px 0;")
+        self.decision_guard_label.setWordWrap(True)
+        layout.addWidget(self.decision_guard_label)
         self.decisions_table = QTableWidget()
-        self.decisions_table.setColumnCount(6)
+        self.decisions_table.setColumnCount(8)
         self.decisions_table.setHorizontalHeaderLabels([
-            "操作", "代码", "名称", "价格", "股数", "理由",
+            "操作", "代码", "名称", "价格", "股数", "验证", "验证分", "理由",
         ])
         self.decisions_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.decisions_table.setAlternatingRowColors(True)
@@ -273,6 +331,12 @@ class AIPortfolioPanel(QWidget):
         self.execute_results.setMaximumHeight(150)
         self.execute_results.setPlaceholderText("执行结果将显示在这里...")
         layout.addWidget(self.execute_results)
+
+        self.decision_compare_text = QTextEdit()
+        self.decision_compare_text.setReadOnly(True)
+        self.decision_compare_text.setMaximumHeight(120)
+        self.decision_compare_text.setPlaceholderText("最近一次自主仓决策：原始决策 vs 守门后决策 对照。")
+        layout.addWidget(self.decision_compare_text)
         return w
 
     def _build_history_tab(self) -> QWidget:
@@ -315,6 +379,7 @@ class AIPortfolioPanel(QWidget):
                 f"¥{c.get('equity', 0):,.0f}",
                 f"{c.get('return_pct', 0):+.2f}%",
                 f"{c.get('win_rate', 0):.1f}%",
+                f"{c.get('open_win_rate', 0):.1f}%",
                 str(c.get("total_trades", 0)),
                 f"¥{c.get('total_pnl', 0):+,.0f}",
             ]
@@ -322,7 +387,7 @@ class AIPortfolioPanel(QWidget):
                 lbl = self.comp_labels.get((i, j))
                 if lbl:
                     lbl.setText(v)
-                    if j in (1, 4):
+                    if j in (1, 5):
                         try:
                             fv = float(v.replace("%", "").replace("¥", "").replace(",", "").replace("+", ""))
                             lbl.setStyleSheet(f"color: {'#ef5350' if fv > 0 else '#26a69a' if fv < 0 else '#888'};")
@@ -372,7 +437,12 @@ class AIPortfolioPanel(QWidget):
                 self.pos_table.setItem(i, j + 1, item)
         self.pos_table.setSortingEnabled(True)
 
-    def update_decisions(self, decisions: list[dict]):
+    def update_decisions(
+        self,
+        decisions: list[dict],
+        verification_summary: dict | None = None,
+        guardrail_summary: dict | None = None,
+    ):
         self.decisions_table.setRowCount(len(decisions))
         colors = {"buy": QColor("#ef5350"), "sell": QColor("#26a69a"), "hold": QColor("#4fc3f7")}
         labels = {"buy": "买入", "sell": "卖出", "hold": "持有"}
@@ -384,6 +454,8 @@ class AIPortfolioPanel(QWidget):
                 d.get("name", ""),
                 str(d.get("price", "")),
                 str(d.get("shares", "")),
+                str(d.get("verification", "-")),
+                str(d.get("verification_score", "-")),
                 d.get("reason", ""),
             ]
             for j, v in enumerate(vals):
@@ -392,8 +464,67 @@ class AIPortfolioPanel(QWidget):
                 if j == 0:
                     item.setForeground(colors.get(action, QColor("#888")))
                     item.setFont(QFont("", 11, QFont.Weight.Bold))
+                if j == 5:
+                    text = str(v)
+                    if text == "verified":
+                        item.setForeground(QColor("#66BB6A"))
+                    elif text == "questionable":
+                        item.setForeground(QColor("#FFB300"))
+                    elif text == "rejected":
+                        item.setForeground(QColor("#EF5350"))
                 self.decisions_table.setItem(i, j, item)
         self.btn_execute.setEnabled(bool(decisions))
+
+        self.update_decision_guard_summary(verification_summary, guardrail_summary)
+
+    def update_decision_guard_summary(
+        self,
+        verification_summary: dict | None = None,
+        guardrail_summary: dict | None = None,
+    ):
+        verification_summary = verification_summary or {}
+        guardrail_summary = guardrail_summary or {}
+        if verification_summary or guardrail_summary:
+            self.decision_guard_label.setText(
+                "验证守门："
+                f"通过 {verification_summary.get('verified_count', 0)} | "
+                f"存疑 {verification_summary.get('questionable_count', 0)} | "
+                f"高风险 {verification_summary.get('rejected_count', 0)} | "
+                f"拦截买入 {guardrail_summary.get('blocked_buy_count', 0)} | "
+                f"存疑放行 {guardrail_summary.get('annotated_buy_count', 0)}"
+            )
+        else:
+            self.decision_guard_label.setText("验证守门：当前这批决策未经过验证层或暂无摘要")
+
+    def update_decision_comparison(
+        self,
+        raw_decisions: list[dict] | None = None,
+        filtered_decisions: list[dict] | None = None,
+        guardrail_summary: dict | None = None,
+    ):
+        raw_decisions = raw_decisions or []
+        filtered_decisions = filtered_decisions or []
+        guardrail_summary = guardrail_summary or {}
+
+        def _fmt(items: list[dict]) -> str:
+            if not items:
+                return "无"
+            labels = []
+            for item in items[:6]:
+                action = str(item.get("action", "") or "")
+                code = str(item.get("code", "") or "")
+                labels.append(f"{action.upper()} {code}".strip())
+            extra = f" 等{len(items)}条" if len(items) > 6 else ""
+            return " / ".join(labels) + extra
+
+        blocked = int(guardrail_summary.get("blocked_buy_count", 0) or 0)
+        annotated = int(guardrail_summary.get("annotated_buy_count", 0) or 0)
+        lines = [
+            f"原始决策: {_fmt(raw_decisions)}",
+            f"守门后决策: {_fmt(filtered_decisions)}",
+            f"守门摘要: 拦截买入 {blocked} 条，存疑放行 {annotated} 条",
+        ]
+        self.decision_compare_text.setText("\n".join(lines))
 
     def update_log(self, auto_logs: list[dict], manual_logs: list[dict]):
         # 合并并按时间排序

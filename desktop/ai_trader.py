@@ -28,6 +28,7 @@ def _get_api_config() -> dict:
     api_key = os.environ.get("DEEPSEEK_API_KEY", "").strip()
     base_url = "https://api.deepseek.com/v1"
     model = "deepseek-chat"
+    provider = "DeepSeek"
 
     if not api_key and os.path.exists(cfg_path):
         try:
@@ -36,6 +37,7 @@ def _get_api_config() -> dict:
             api_key = cfg.get("ai_api_key", "") or api_key
             base_url = cfg.get("ai_base_url", "") or base_url
             model = cfg.get("ai_model", "") or model
+            provider = cfg.get("ai_provider", "") or provider
         except Exception:
             pass
 
@@ -51,10 +53,11 @@ def _get_api_config() -> dict:
                 api_key = cfg.get("api_key", "")
                 base_url = cfg.get("base_url", base_url)
                 model = cfg.get("model", model)
+                provider = cfg.get("provider", provider)
         except Exception:
             pass
 
-    return {"api_key": api_key, "base_url": base_url, "model": model}
+    return {"api_key": api_key, "base_url": base_url, "model": model, "provider": provider}
 
 
 def save_ai_config(api_key: str, base_url: str = "", model: str = ""):
@@ -104,8 +107,16 @@ def _call_llm(prompt: str, system: str = "") -> str:
                 "Authorization": f"Bearer {cfg['api_key']}",
             })
             resp = urllib.request.urlopen(req, timeout=api_timeout)
-            body = json.loads(resp.read().decode("utf-8"))
-            return body["choices"][0]["message"]["content"]
+            body = json.loads(resp.read().decode("utf-8", errors="ignore"))
+            choices = body.get("choices") if isinstance(body, dict) else None
+            if isinstance(choices, list) and choices:
+                first = choices[0] if isinstance(choices[0], dict) else {}
+                message = first.get("message") if isinstance(first, dict) else {}
+                content = message.get("content") if isinstance(message, dict) else ""
+                if isinstance(content, str) and content.strip():
+                    return content
+            err_msg = body.get("error") if isinstance(body, dict) else None
+            raise ValueError(f"unexpected LLM response: {err_msg or body}")
         except Exception as e:
             last_err = e
             if attempt == 0 and "timed out" in str(e).lower():
@@ -462,6 +473,43 @@ def execute_ai_decisions(decisions: list[dict], mode: str = "auto") -> list[str]
         elif action == "hold":
             results.append(f"持有 {code}: {reason}")
 
+    return results
+
+
+def execute_sell_signals_across_modes(
+    decisions: list[dict],
+    modes: tuple[str, ...] = ("auto", "custom", "quantum"),
+) -> list[str]:
+    """Apply AI sell signals to matching holdings across selected simulated portfolios."""
+    results: list[str] = []
+    seen: set[tuple[str, str]] = set()
+    sell_decisions = [
+        item
+        for item in decisions or []
+        if str(item.get("action", "") or "").lower() == "sell" and str(item.get("code", "") or "")
+    ]
+    if not sell_decisions:
+        return results
+
+    for decision in sell_decisions:
+        code = str(decision.get("code", "") or "")
+        reason = str(decision.get("reason", "") or "")
+        fallback_price = float(decision.get("price", 0) or 0)
+        for mode in modes:
+            key = (mode, code)
+            if key in seen:
+                continue
+            seen.add(key)
+            state = get_state(mode)
+            positions = state.get("positions", []) if isinstance(state, dict) else []
+            if not any(str(item.get("code", "") or "") == code for item in positions):
+                continue
+            price = _get_real_price(code) or fallback_price
+            if price <= 0:
+                results.append(f"[{mode}] 卖出失败 {code}: 无法获取价格")
+                continue
+            msg = sell(mode, code, price, f"AI卖出信号: {reason}")
+            results.append(msg)
     return results
 
 

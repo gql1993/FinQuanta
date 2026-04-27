@@ -13,6 +13,7 @@ from typing import Any
 
 from api_server.config import settings
 from api_server.storage import repo
+from core.audit.event_models import create_system_event, event_from_log_row
 
 
 def insert_ignore_stock_list_rows(rows: list[tuple]) -> None:
@@ -109,12 +110,25 @@ def append_system_event(
     title: str,
     detail: str = "",
     level: str = "info",
+    *,
+    trace_id: str = "",
+    decision_id: str = "",
+    metadata: dict[str, Any] | None = None,
 ) -> None:
     ensure_platform_tables()
-    ts = datetime.now().isoformat()
+    event = create_system_event(
+        source=source,
+        category=category,
+        title=title,
+        detail=detail,
+        level=level,
+        trace_id=trace_id,
+        decision_id=decision_id,
+        metadata=metadata,
+    )
     repo.execute(
         "INSERT INTO system_event_log (timestamp, source, category, level, title, detail) VALUES (?,?,?,?,?,?)",
-        (ts, source, category, level, title, detail),
+        event.to_log_row(),
     )
 
 
@@ -170,17 +184,7 @@ def fetch_recent_system_events(limit: int = 50) -> list[dict[str, Any]]:
         "FROM system_event_log ORDER BY id DESC LIMIT ?",
         (limit,),
     )
-    return [
-        {
-            "timestamp": r[0],
-            "source": r[1],
-            "category": r[2],
-            "level": r[3],
-            "title": r[4],
-            "detail": r[5],
-        }
-        for r in rows
-    ]
+    return [event_from_log_row(r) for r in rows]
 
 
 def get_kv_json(key: str, default=None):

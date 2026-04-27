@@ -40,6 +40,12 @@ class SettingsCenter:
         except (TypeError, ValueError):
             return default
 
+    def get_float(self, key: str, default: float = 0.0) -> float:
+        try:
+            return float(os.environ.get(key, default))
+        except (TypeError, ValueError):
+            return default
+
     def get_str(self, key: str, default: str = "") -> str:
         value = os.environ.get(key)
         return default if value is None else str(value)

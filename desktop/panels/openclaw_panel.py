@@ -2,6 +2,8 @@
 OpenClaw 智能体执行网关面板
 全流程自动化中枢：数据采集 → 策略研判 → 交易执行 → 监控反馈
 """
+import json
+
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QLineEdit, QGroupBox, QGridLayout, QComboBox, QCheckBox,
@@ -10,6 +12,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtGui import QFont, QColor
 from PyQt6.QtCore import Qt
+from desktop.ui_tokens import APP_FONT
 
 
 class OpenClawPanel(QWidget):
@@ -27,20 +30,24 @@ class OpenClawPanel(QWidget):
         # ── 标题 ──
         header = QHBoxLayout()
         title = QLabel("🦀 OpenClaw 智能体执行网关")
-        title.setFont(QFont("", 16, QFont.Weight.Bold))
+        title.setFont(QFont("", APP_FONT["page_title"], QFont.Weight.Bold))
         title.setStyleSheet("color:#FF6D00;")
         header.addWidget(title)
         header.addStretch()
 
         self.status_indicator = QLabel("● 未连接")
-        self.status_indicator.setStyleSheet("color:#ef5350; font-size:13px; font-weight:bold;")
+        self.status_indicator.setStyleSheet(
+            f"color:#ef5350; font-size:{APP_FONT['emphasis']}px; font-weight:bold;"
+        )
         header.addWidget(self.status_indicator)
         layout.addLayout(header)
 
         subtitle = QLabel(
             "开源 AI 智能体执行网关 — 连接 LLM、数据源、策略引擎与交易 API 的全流程自动化中枢"
         )
-        subtitle.setStyleSheet("color:#8b949e; font-size:11px; padding:0 0 6px 0;")
+        subtitle.setStyleSheet(
+            f"color:#8b949e; font-size:{APP_FONT['caption']}px; padding:0 0 6px 0;"
+        )
         subtitle.setWordWrap(True)
         layout.addWidget(subtitle)
 
@@ -73,7 +80,9 @@ class OpenClawPanel(QWidget):
         cfg.addWidget(self.run_freq, 1, 3)
 
         self.btn_connect = QPushButton("🔌 连接并启动")
-        self.btn_connect.setStyleSheet("font-size:13px; padding:8px 20px; background:#E65100; color:white;")
+        self.btn_connect.setStyleSheet(
+            f"font-size:{APP_FONT['emphasis']}px; padding:8px 20px; background:#E65100; color:white;"
+        )
         cfg.addWidget(self.btn_connect, 2, 0, 1, 2)
 
         self.btn_save_cfg = QPushButton("💾 保存配置")
@@ -116,7 +125,7 @@ class OpenClawPanel(QWidget):
             "多源数据拉取 · 结构化处理 · 实时监控\n"
             "自动获取行情、财报、研报、公告、宏观数据、舆情，7×24 盯盘"
         )
-        desc.setStyleSheet("color:#8b949e; font-size:11px;")
+        desc.setStyleSheet(f"color:#8b949e; font-size:{APP_FONT['caption']}px;")
         desc.setWordWrap(True)
         layout.addWidget(desc)
 
@@ -134,7 +143,7 @@ class OpenClawPanel(QWidget):
         # 操作按钮
         btn_row = QHBoxLayout()
         self.btn_fetch_all = QPushButton("📥 全量数据拉取")
-        self.btn_fetch_all.setStyleSheet("font-size:12px; padding:6px 14px;")
+        self.btn_fetch_all.setStyleSheet(f"font-size:{APP_FONT['body']}px; padding:6px 14px;")
         btn_row.addWidget(self.btn_fetch_all)
         self.btn_fetch_realtime = QPushButton("⚡ 实时行情刷新")
         btn_row.addWidget(self.btn_fetch_realtime)
@@ -150,7 +159,9 @@ class OpenClawPanel(QWidget):
         self.monitor_log.setReadOnly(True)
         self.monitor_log.setMaximumHeight(120)
         self.monitor_log.setPlaceholderText("实时监控事件流...")
-        self.monitor_log.setStyleSheet("font-size:11px; background:#0d1117;")
+        self.monitor_log.setStyleSheet(
+            f"font-size:{APP_FONT['caption']}px; background:#0d1117;"
+        )
         layout.addWidget(self.monitor_log)
 
         return w
@@ -166,7 +177,7 @@ class OpenClawPanel(QWidget):
             "多因子筛选回测 · 跨维度信号生成 · 策略自动生成 · 行情模式识别\n"
             "融合技术面、基本面、情绪面、宏观面，LLM 综合判断多空与仓位"
         )
-        desc.setStyleSheet("color:#8b949e; font-size:11px;")
+        desc.setStyleSheet(f"color:#8b949e; font-size:{APP_FONT['caption']}px;")
         desc.setWordWrap(True)
         layout.addWidget(desc)
 
@@ -177,10 +188,14 @@ class OpenClawPanel(QWidget):
             "用自然语言描述策略，如：「选出近5日放量突破MA50且RSI<70的半导体股票」"
         )
         self.strategy_input.setMinimumHeight(36)
-        self.strategy_input.setStyleSheet("font-size:13px; padding:6px;")
+        self.strategy_input.setStyleSheet(
+            f"font-size:{APP_FONT['emphasis']}px; padding:6px;"
+        )
         nl_row.addWidget(self.strategy_input)
         self.btn_nl_run = QPushButton("🧠 AI 研判")
-        self.btn_nl_run.setStyleSheet("font-size:13px; padding:8px 16px; background:#1565C0;")
+        self.btn_nl_run.setStyleSheet(
+            f"font-size:{APP_FONT['emphasis']}px; padding:8px 16px; background:#1565C0;"
+        )
         nl_row.addWidget(self.btn_nl_run)
         layout.addLayout(nl_row)
 
@@ -198,7 +213,7 @@ class OpenClawPanel(QWidget):
         self.quick_btns = {}
         for label, key in strategies:
             btn = QPushButton(label)
-            btn.setStyleSheet("font-size:11px; padding:4px 10px;")
+            btn.setStyleSheet(f"font-size:{APP_FONT['caption']}px; padding:4px 10px;")
             btn.setProperty("strategy_key", key)
             quick_row.addWidget(btn)
             self.quick_btns[key] = btn
@@ -207,21 +222,39 @@ class OpenClawPanel(QWidget):
 
         # 研判结果表
         self.decision_result_table = QTableWidget()
-        self.decision_result_table.setColumnCount(8)
+        self.decision_result_table.setColumnCount(11)
         self.decision_result_table.setHorizontalHeaderLabels([
-            "代码", "名称", "信号", "方向", "置信度", "因子得分", "建议仓位", "理由",
+            "代码", "名称", "信号", "方向", "置信度", "因子得分", "建议仓位", "验证", "验证分", "风险级别", "理由",
         ])
         self.decision_result_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.decision_result_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.decision_result_table.setAlternatingRowColors(True)
         layout.addWidget(self.decision_result_table)
 
+        self.decision_guard_label = QLabel("验证层状态：待运行")
+        self.decision_guard_label.setWordWrap(True)
+        self.decision_guard_label.setStyleSheet(
+            f"color:#8b949e; font-size:{APP_FONT['caption']}px; padding:4px 0;"
+        )
+        layout.addWidget(self.decision_guard_label)
+
+        self.decision_compare_text = QTextEdit()
+        self.decision_compare_text.setReadOnly(True)
+        self.decision_compare_text.setMaximumHeight(120)
+        self.decision_compare_text.setPlaceholderText("这里会显示原始决策与守门后决策的差异对照。")
+        self.decision_compare_text.setStyleSheet(
+            f"font-size:{APP_FONT['caption']}px; background:#0d1117;"
+        )
+        layout.addWidget(self.decision_compare_text)
+
         # AI 分析输出
         self.ai_analysis_output = QTextEdit()
         self.ai_analysis_output.setReadOnly(True)
         self.ai_analysis_output.setMaximumHeight(150)
         self.ai_analysis_output.setPlaceholderText("AI 综合研判分析结果...")
-        self.ai_analysis_output.setStyleSheet("font-size:12px; background:#0d1117;")
+        self.ai_analysis_output.setStyleSheet(
+            f"font-size:{APP_FONT['body']}px; background:#0d1117;"
+        )
         layout.addWidget(self.ai_analysis_output)
 
         return w
@@ -237,7 +270,7 @@ class OpenClawPanel(QWidget):
             "API 对接与自动下单 · 条件单与智能执行 · 实时风控 · 物理隔离安全\n"
             "支持分批、网格、止盈止损等执行逻辑，自动暂停/平仓/报警"
         )
-        desc.setStyleSheet("color:#8b949e; font-size:11px;")
+        desc.setStyleSheet(f"color:#8b949e; font-size:{APP_FONT['caption']}px;")
         desc.setWordWrap(True)
         layout.addWidget(desc)
 
@@ -283,10 +316,30 @@ class OpenClawPanel(QWidget):
         self.exec_table.setAlternatingRowColors(True)
         layout.addWidget(self.exec_table)
 
+        self.execution_plan_label = QLabel("策略分流：待运行")
+        self.execution_plan_label.setWordWrap(True)
+        self.execution_plan_label.setStyleSheet(
+            f"color:#8b949e; font-size:{APP_FONT['caption']}px; padding:4px 0;"
+        )
+        layout.addWidget(self.execution_plan_label)
+
+        self.execution_block_table = QTableWidget()
+        self.execution_block_table.setColumnCount(4)
+        self.execution_block_table.setHorizontalHeaderLabels([
+            "动作", "代码", "名称", "分流原因",
+        ])
+        self.execution_block_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.execution_block_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.execution_block_table.setAlternatingRowColors(True)
+        self.execution_block_table.setMaximumHeight(120)
+        layout.addWidget(self.execution_block_table)
+
         # 执行按钮
         exec_btn_row = QHBoxLayout()
         self.btn_exec_all = QPushButton("▶ 执行全部待办")
-        self.btn_exec_all.setStyleSheet("font-size:13px; padding:8px 16px; background:#2E7D32;")
+        self.btn_exec_all.setStyleSheet(
+            f"font-size:{APP_FONT['emphasis']}px; padding:8px 16px; background:#2E7D32;"
+        )
         exec_btn_row.addWidget(self.btn_exec_all)
         self.btn_pause_exec = QPushButton("⏸ 暂停执行")
         exec_btn_row.addWidget(self.btn_pause_exec)
@@ -309,7 +362,7 @@ class OpenClawPanel(QWidget):
             "主动式提醒 · 绩效归因 · 策略迭代\n"
             "关键价位突破、指标背离、风险超标时自动推送，定期归因分析与策略调优建议"
         )
-        desc.setStyleSheet("color:#8b949e; font-size:11px;")
+        desc.setStyleSheet(f"color:#8b949e; font-size:{APP_FONT['caption']}px;")
         desc.setWordWrap(True)
         layout.addWidget(desc)
 
@@ -333,10 +386,10 @@ class OpenClawPanel(QWidget):
             cl.setContentsMargins(8, 4, 8, 4)
             cl.setSpacing(1)
             t = QLabel(label)
-            t.setStyleSheet(f"color:{color}; font-size:10px; border:none;")
+            t.setStyleSheet(f"color:{color}; font-size:{APP_FONT['caption']}px; border:none;")
             cl.addWidget(t)
             v = QLabel("-")
-            v.setFont(QFont("", 14, QFont.Weight.Bold))
+            v.setFont(QFont("", APP_FONT["section"], QFont.Weight.Bold))
             v.setStyleSheet("color:#e0e0e0; border:none;")
             cl.addWidget(v)
             perf_row.addWidget(card)
@@ -357,7 +410,9 @@ class OpenClawPanel(QWidget):
         # 策略迭代建议
         iter_row = QHBoxLayout()
         self.btn_generate_report = QPushButton("📊 生成绩效报告")
-        self.btn_generate_report.setStyleSheet("font-size:12px; padding:6px 14px;")
+        self.btn_generate_report.setStyleSheet(
+            f"font-size:{APP_FONT['body']}px; padding:6px 14px;"
+        )
         iter_row.addWidget(self.btn_generate_report)
         self.btn_suggest_optimize = QPushButton("🔧 AI 策略调优建议")
         iter_row.addWidget(self.btn_suggest_optimize)
@@ -370,7 +425,9 @@ class OpenClawPanel(QWidget):
         self.feedback_output.setReadOnly(True)
         self.feedback_output.setMaximumHeight(150)
         self.feedback_output.setPlaceholderText("绩效分析 / 策略调优建议...")
-        self.feedback_output.setStyleSheet("font-size:12px; background:#0d1117;")
+        self.feedback_output.setStyleSheet(
+            f"font-size:{APP_FONT['body']}px; background:#0d1117;"
+        )
         layout.addWidget(self.feedback_output)
 
         return w
@@ -385,7 +442,7 @@ class OpenClawPanel(QWidget):
         desc = QLabel(
             "一键执行完整量化流水线：数据采集 → 多因子筛选 → AI 研判 → 交易执行 → 风控监控 → 绩效复盘"
         )
-        desc.setStyleSheet("color:#8b949e; font-size:12px;")
+        desc.setStyleSheet(f"color:#8b949e; font-size:{APP_FONT['body']}px;")
         desc.setWordWrap(True)
         layout.addWidget(desc)
 
@@ -435,11 +492,13 @@ class OpenClawPanel(QWidget):
         btn_row = QHBoxLayout()
         self.btn_run_pipeline = QPushButton("🚀 启动全流程")
         self.btn_run_pipeline.setStyleSheet(
-            "font-size:14px; padding:10px 28px; background:#E65100; color:white; font-weight:bold;"
+            f"font-size:{APP_FONT['section']}px; padding:10px 28px; background:#E65100; color:white; font-weight:bold;"
         )
         btn_row.addWidget(self.btn_run_pipeline)
         self.btn_schedule_pipeline = QPushButton("⏰ 定时执行")
-        self.btn_schedule_pipeline.setStyleSheet("font-size:12px; padding:8px 16px;")
+        self.btn_schedule_pipeline.setStyleSheet(
+            f"font-size:{APP_FONT['body']}px; padding:8px 16px;"
+        )
         btn_row.addWidget(self.btn_schedule_pipeline)
         btn_row.addStretch()
         layout.addLayout(btn_row)
@@ -449,8 +508,75 @@ class OpenClawPanel(QWidget):
         self.pipeline_log.setReadOnly(True)
         self.pipeline_log.setMaximumHeight(180)
         self.pipeline_log.setPlaceholderText("全流程执行日志...")
-        self.pipeline_log.setStyleSheet("font-size:11px; background:#0d1117;")
+        self.pipeline_log.setStyleSheet(
+            f"font-size:{APP_FONT['caption']}px; background:#0d1117;"
+        )
         layout.addWidget(self.pipeline_log)
+
+        orch_group = QGroupBox("🧭 Coordinator 编排轨迹")
+        ol = QVBoxLayout(orch_group)
+        self.coordinator_orch_label = QLabel("Coordinator 编排：等待流水线执行")
+        self.coordinator_orch_label.setWordWrap(True)
+        self.coordinator_orch_label.setStyleSheet(
+            f"color:#cbd5e1; font-size:{APP_FONT['caption']}px; padding:4px 0;"
+        )
+        ol.addWidget(self.coordinator_orch_label)
+
+        self.coordinator_orch_table = QTableWidget()
+        self.coordinator_orch_table.setColumnCount(6)
+        self.coordinator_orch_table.setHorizontalHeaderLabels([
+            "阶段", "Ready", "模式", "动作数", "执行动作", "原因",
+        ])
+        self.coordinator_orch_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.coordinator_orch_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.coordinator_orch_table.setAlternatingRowColors(True)
+        self.coordinator_orch_table.setMaximumHeight(160)
+        self.coordinator_orch_table.cellClicked.connect(self._on_coordinator_orch_row_clicked)
+        ol.addWidget(self.coordinator_orch_table)
+
+        self.coordinator_orch_detail = QTextEdit()
+        self.coordinator_orch_detail.setReadOnly(True)
+        self.coordinator_orch_detail.setMaximumHeight(140)
+        self.coordinator_orch_detail.setPlaceholderText("点击上方编排记录查看动作详情。")
+        self.coordinator_orch_detail.setStyleSheet(
+            f"font-size:{APP_FONT['caption']}px; background:#0d1117;"
+        )
+        ol.addWidget(self.coordinator_orch_detail)
+        layout.addWidget(orch_group)
+
+        trace_group = QGroupBox("🔎 Agent Trace 明细")
+        tl = QVBoxLayout(trace_group)
+        self.agent_trace_label = QLabel("Agent Trace：等待流水线执行")
+        self.agent_trace_label.setWordWrap(True)
+        self.agent_trace_label.setStyleSheet(
+            f"color:#cbd5e1; font-size:{APP_FONT['caption']}px; padding:4px 0;"
+        )
+        tl.addWidget(self.agent_trace_label)
+
+        self.agent_trace_table = QTableWidget()
+        self.agent_trace_table.setColumnCount(6)
+        self.agent_trace_table.setHorizontalHeaderLabels([
+            "Agent", "阶段", "状态", "耗时(ms)", "Span", "摘要",
+        ])
+        self.agent_trace_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.agent_trace_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.agent_trace_table.setAlternatingRowColors(True)
+        self.agent_trace_table.setMaximumHeight(180)
+        self.agent_trace_table.cellClicked.connect(self._on_agent_trace_row_clicked)
+        tl.addWidget(self.agent_trace_table)
+
+        self.agent_trace_detail = QTextEdit()
+        self.agent_trace_detail.setReadOnly(True)
+        self.agent_trace_detail.setMaximumHeight(160)
+        self.agent_trace_detail.setPlaceholderText("点击上方 span 查看输入/输出摘要。")
+        self.agent_trace_detail.setStyleSheet(
+            f"font-size:{APP_FONT['caption']}px; background:#0d1117;"
+        )
+        tl.addWidget(self.agent_trace_detail)
+        layout.addWidget(trace_group)
+
+        self._agent_trace_items: list[dict] = []
+        self._coordinator_orch_items: list[dict] = []
 
         return w
 
@@ -460,10 +586,14 @@ class OpenClawPanel(QWidget):
     def set_connected(self, connected: bool):
         if connected:
             self.status_indicator.setText("● 已连接")
-            self.status_indicator.setStyleSheet("color:#66bb6a; font-size:13px; font-weight:bold;")
+            self.status_indicator.setStyleSheet(
+                f"color:#66bb6a; font-size:{APP_FONT['emphasis']}px; font-weight:bold;"
+            )
         else:
             self.status_indicator.setText("● 未连接")
-            self.status_indicator.setStyleSheet("color:#ef5350; font-size:13px; font-weight:bold;")
+            self.status_indicator.setStyleSheet(
+                f"color:#ef5350; font-size:{APP_FONT['emphasis']}px; font-weight:bold;"
+            )
 
     # ═══════════════════════════════════════════
     #  自主进化 — 学习 + 优化 + 赋能
@@ -477,7 +607,7 @@ class OpenClawPanel(QWidget):
             "学习规律调整权重 → 生成优化建议 → 赋能完全自主仓\n"
             "形成 数据→决策→执行→校准→学习→优化 的完整闭环"
         )
-        desc.setStyleSheet("color:#8b949e; font-size:11px;")
+        desc.setStyleSheet(f"color:#8b949e; font-size:{APP_FONT['caption']}px;")
         desc.setWordWrap(True)
         layout.addWidget(desc)
 
@@ -489,21 +619,29 @@ class OpenClawPanel(QWidget):
         sched_row.addWidget(self.evolve_freq)
 
         self.btn_learn_now = QPushButton("🧠 立即学习")
-        self.btn_learn_now.setStyleSheet("font-size:13px; padding:8px 18px; background:#E65100; color:white;")
+        self.btn_learn_now.setStyleSheet(
+            f"font-size:{APP_FONT['emphasis']}px; padding:8px 18px; background:#E65100; color:white;"
+        )
         sched_row.addWidget(self.btn_learn_now)
 
         self.btn_evolve_advice = QPushButton("💡 AI进化建议")
-        self.btn_evolve_advice.setStyleSheet("font-size:13px; padding:8px 18px; background:#1565C0;")
+        self.btn_evolve_advice.setStyleSheet(
+            f"font-size:{APP_FONT['emphasis']}px; padding:8px 18px; background:#1565C0;"
+        )
         sched_row.addWidget(self.btn_evolve_advice)
 
         self.btn_apply_weights = QPushButton("✅ 应用权重到自主仓")
-        self.btn_apply_weights.setStyleSheet("font-size:13px; padding:8px 18px; background:#2E7D32;")
+        self.btn_apply_weights.setStyleSheet(
+            f"font-size:{APP_FONT['emphasis']}px; padding:8px 18px; background:#2E7D32;"
+        )
         sched_row.addWidget(self.btn_apply_weights)
         sched_row.addStretch()
         layout.addLayout(sched_row)
 
         self.evolve_status = QLabel("等待学习...")
-        self.evolve_status.setStyleSheet("color:#4fc3f7; font-size:12px; padding:4px;")
+        self.evolve_status.setStyleSheet(
+            f"color:#4fc3f7; font-size:{APP_FONT['body']}px; padding:4px;"
+        )
         layout.addWidget(self.evolve_status)
 
         # 策略权重表
@@ -519,6 +657,42 @@ class OpenClawPanel(QWidget):
         self.weight_table.setAlternatingRowColors(True)
         wl.addWidget(self.weight_table)
         layout.addWidget(weight_group)
+
+        verify_group = QGroupBox("🛂 验证守门效果")
+        vl = QVBoxLayout(verify_group)
+        self.verification_effect_label = QLabel("等待学习结果...")
+        self.verification_effect_label.setStyleSheet(
+            f"color:#cbd5e1; font-size:{APP_FONT['body']}px; padding:4px 0;"
+        )
+        self.verification_effect_label.setWordWrap(True)
+        vl.addWidget(self.verification_effect_label)
+        self.verification_effect_text = QTextEdit()
+        self.verification_effect_text.setReadOnly(True)
+        self.verification_effect_text.setMaximumHeight(120)
+        self.verification_effect_text.setPlaceholderText("这里会展示验证通过/存疑/拦截买入的后验效果。")
+        self.verification_effect_text.setStyleSheet(
+            f"font-size:{APP_FONT['caption']}px; background:#0d1117;"
+        )
+        vl.addWidget(self.verification_effect_text)
+        layout.addWidget(verify_group)
+
+        coordinator_group = QGroupBox("🧭 协调者分流效果")
+        cl = QVBoxLayout(coordinator_group)
+        self.coordinator_effect_label = QLabel("等待学习结果...")
+        self.coordinator_effect_label.setStyleSheet(
+            f"color:#cbd5e1; font-size:{APP_FONT['body']}px; padding:4px 0;"
+        )
+        self.coordinator_effect_label.setWordWrap(True)
+        cl.addWidget(self.coordinator_effect_label)
+        self.coordinator_effect_text = QTextEdit()
+        self.coordinator_effect_text.setReadOnly(True)
+        self.coordinator_effect_text.setMaximumHeight(120)
+        self.coordinator_effect_text.setPlaceholderText("这里会展示 sell_only / limit_buy / observe_only 的后验效果与当前参数。")
+        self.coordinator_effect_text.setStyleSheet(
+            f"font-size:{APP_FONT['caption']}px; background:#0d1117;"
+        )
+        cl.addWidget(self.coordinator_effect_text)
+        layout.addWidget(coordinator_group)
 
         # 学习发现
         findings_group = QGroupBox("🔍 学习发现")
@@ -536,7 +710,9 @@ class OpenClawPanel(QWidget):
         self.evolve_output.setReadOnly(True)
         self.evolve_output.setMaximumHeight(200)
         self.evolve_output.setPlaceholderText("AI 自主进化建议...")
-        self.evolve_output.setStyleSheet("font-size:12px; background:#0d1117;")
+        self.evolve_output.setStyleSheet(
+            f"font-size:{APP_FONT['body']}px; background:#0d1117;"
+        )
         layout.addWidget(self.evolve_output)
 
         # 学习历史
@@ -544,7 +720,9 @@ class OpenClawPanel(QWidget):
         self.learning_log.setReadOnly(True)
         self.learning_log.setMaximumHeight(120)
         self.learning_log.setPlaceholderText("学习历史记录...")
-        self.learning_log.setStyleSheet("font-size:11px; background:#0d1117;")
+        self.learning_log.setStyleSheet(
+            f"font-size:{APP_FONT['caption']}px; background:#0d1117;"
+        )
         layout.addWidget(self.learning_log)
 
         return w
@@ -554,18 +732,147 @@ class OpenClawPanel(QWidget):
         layout = QVBoxLayout(w)
 
         desc = QLabel("统一查看最近任务运行、系统事件与运营状态。")
-        desc.setStyleSheet("color:#8b949e; font-size:11px;")
+        desc.setStyleSheet(f"color:#8b949e; font-size:{APP_FONT['caption']}px;")
         layout.addWidget(desc)
 
         row = QHBoxLayout()
         self.btn_refresh_ops = QPushButton("🔄 刷新运行中心")
-        self.btn_refresh_ops.setStyleSheet("font-size:12px; padding:6px 14px;")
+        self.btn_refresh_ops.setStyleSheet(
+            f"font-size:{APP_FONT['body']}px; padding:6px 14px;"
+        )
         row.addWidget(self.btn_refresh_ops)
         self.ops_status = QLabel("等待刷新...")
-        self.ops_status.setStyleSheet("color:#4fc3f7; font-size:12px;")
+        self.ops_status.setStyleSheet(f"color:#4fc3f7; font-size:{APP_FONT['body']}px;")
         row.addWidget(self.ops_status)
         row.addStretch()
         layout.addLayout(row)
+
+        daemon_row = QHBoxLayout()
+        self.daemon_status_label = QLabel("Daemon: -")
+        self.daemon_status_label.setStyleSheet(
+            f"color:#cbd5e1; font-size:{APP_FONT['body']}px;"
+        )
+        daemon_row.addWidget(self.daemon_status_label)
+        self.daemon_next_task_label = QLabel("下一任务: -")
+        self.daemon_next_task_label.setStyleSheet(
+            f"color:#94a3b8; font-size:{APP_FONT['body']}px;"
+        )
+        daemon_row.addWidget(self.daemon_next_task_label)
+        daemon_row.addStretch()
+        layout.addLayout(daemon_row)
+
+        oc_daemon_group = QGroupBox("🦀 后台 OpenClaw")
+        odl = QVBoxLayout(oc_daemon_group)
+        self.openclaw_daemon_summary = QLabel("等待刷新后台 OpenClaw 状态...")
+        self.openclaw_daemon_summary.setWordWrap(True)
+        self.openclaw_daemon_summary.setStyleSheet(
+            f"color:#cbd5e1; font-size:{APP_FONT['caption']}px; padding:4px 0;"
+        )
+        odl.addWidget(self.openclaw_daemon_summary)
+
+        status_grid = QGridLayout()
+        self.openclaw_daemon_config_label = QLabel("配置: -")
+        self.openclaw_daemon_last_run_label = QLabel("上次执行: -")
+        self.openclaw_daemon_alert_label = QLabel("告警: -")
+        self.openclaw_daemon_guard_label = QLabel("安全闸: -")
+        for idx, widget in enumerate([
+            self.openclaw_daemon_config_label,
+            self.openclaw_daemon_last_run_label,
+            self.openclaw_daemon_alert_label,
+            self.openclaw_daemon_guard_label,
+        ]):
+            widget.setWordWrap(True)
+            widget.setStyleSheet(f"color:#94a3b8; font-size:{APP_FONT['caption']}px;")
+            status_grid.addWidget(widget, idx // 2, idx % 2)
+        odl.addLayout(status_grid)
+
+        self.openclaw_daemon_history_table = QTableWidget()
+        self.openclaw_daemon_history_table.setColumnCount(8)
+        self.openclaw_daemon_history_table.setHorizontalHeaderLabels([
+            "时间", "状态", "模式", "拦截", "Trace", "编排", "仿真", "摘要",
+        ])
+        self.openclaw_daemon_history_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.openclaw_daemon_history_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.openclaw_daemon_history_table.setAlternatingRowColors(True)
+        self.openclaw_daemon_history_table.setMaximumHeight(150)
+        odl.addWidget(self.openclaw_daemon_history_table)
+        self.openclaw_guard_replay_label = QLabel("安全闸回放：暂无记录")
+        self.openclaw_guard_replay_label.setWordWrap(True)
+        self.openclaw_guard_replay_label.setStyleSheet(
+            f"color:#94a3b8; font-size:{APP_FONT['caption']}px; padding:4px 0;"
+        )
+        odl.addWidget(self.openclaw_guard_replay_label)
+        replay_btn_row = QHBoxLayout()
+        self.btn_run_guard_replay = QPushButton("🧪 运行安全闸回放")
+        self.btn_run_guard_replay.setStyleSheet(
+            f"font-size:{APP_FONT['caption']}px; padding:5px 12px; background:#0f766e;"
+        )
+        replay_btn_row.addWidget(self.btn_run_guard_replay)
+        self.openclaw_guard_replay_status = QLabel("")
+        self.openclaw_guard_replay_status.setStyleSheet(
+            f"color:#94a3b8; font-size:{APP_FONT['caption']}px;"
+        )
+        replay_btn_row.addWidget(self.openclaw_guard_replay_status)
+        replay_btn_row.addStretch()
+        odl.addLayout(replay_btn_row)
+        self.openclaw_guard_replay_table = QTableWidget()
+        self.openclaw_guard_replay_table.setColumnCount(7)
+        self.openclaw_guard_replay_table.setHorizontalHeaderLabels([
+            "时间", "来源", "模式", "输入", "通过", "拒绝", "结果",
+        ])
+        self.openclaw_guard_replay_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.openclaw_guard_replay_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.openclaw_guard_replay_table.setAlternatingRowColors(True)
+        self.openclaw_guard_replay_table.setMaximumHeight(120)
+        odl.addWidget(self.openclaw_guard_replay_table)
+        self.openclaw_config_audit_label = QLabel("配置审计：暂无记录")
+        self.openclaw_config_audit_label.setWordWrap(True)
+        self.openclaw_config_audit_label.setStyleSheet(
+            f"color:#94a3b8; font-size:{APP_FONT['caption']}px; padding:4px 0;"
+        )
+        odl.addWidget(self.openclaw_config_audit_label)
+        audit_btn_row = QHBoxLayout()
+        self.btn_rollback_config_audit = QPushButton("↩ 回滚最近配置变更")
+        self.btn_rollback_config_audit.setStyleSheet(
+            f"font-size:{APP_FONT['caption']}px; padding:5px 12px; background:#7c3aed;"
+        )
+        audit_btn_row.addWidget(self.btn_rollback_config_audit)
+        self.openclaw_config_rollback_status = QLabel("")
+        self.openclaw_config_rollback_status.setStyleSheet(
+            f"color:#94a3b8; font-size:{APP_FONT['caption']}px;"
+        )
+        audit_btn_row.addWidget(self.openclaw_config_rollback_status)
+        audit_btn_row.addStretch()
+        odl.addLayout(audit_btn_row)
+        self.openclaw_config_audit_table = QTableWidget()
+        self.openclaw_config_audit_table.setColumnCount(5)
+        self.openclaw_config_audit_table.setHorizontalHeaderLabels(["时间", "配置域", "动作", "变更字段", "操作者"])
+        self.openclaw_config_audit_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.openclaw_config_audit_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.openclaw_config_audit_table.setAlternatingRowColors(True)
+        self.openclaw_config_audit_table.setMaximumHeight(120)
+        odl.addWidget(self.openclaw_config_audit_table)
+        layout.addWidget(oc_daemon_group)
+
+        agent_group = QGroupBox("🤖 Agent Registry / 智能体能力")
+        al = QVBoxLayout(agent_group)
+        self.agent_registry_label = QLabel("等待刷新运行中心...")
+        self.agent_registry_label.setWordWrap(True)
+        self.agent_registry_label.setStyleSheet(
+            f"color:#cbd5e1; font-size:{APP_FONT['caption']}px; padding:4px 0;"
+        )
+        al.addWidget(self.agent_registry_label)
+        self.agent_registry_table = QTableWidget()
+        self.agent_registry_table.setColumnCount(6)
+        self.agent_registry_table.setHorizontalHeaderLabels([
+            "Key", "名称", "阶段", "安全级别", "能力", "入口",
+        ])
+        self.agent_registry_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.agent_registry_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.agent_registry_table.setAlternatingRowColors(True)
+        self.agent_registry_table.setMaximumHeight(190)
+        al.addWidget(self.agent_registry_table)
+        layout.addWidget(agent_group)
 
         task_group = QGroupBox("📋 最近任务运行")
         tl = QVBoxLayout(task_group)
@@ -608,7 +915,7 @@ class OpenClawPanel(QWidget):
                     wt = w.get("weight", 1.0)
                     color = "#66bb6a" if wt >= 1.5 else "#ef5350" if wt < 0.5 else "#4fc3f7"
                     item.setForeground(QColor(color))
-                    item.setFont(QFont("", 11, QFont.Weight.Bold))
+                    item.setFont(QFont("", APP_FONT["caption"], QFont.Weight.Bold))
                 self.weight_table.setItem(i, j, item)
 
     def update_findings(self, learnings: list[dict]):
@@ -621,7 +928,214 @@ class OpenClawPanel(QWidget):
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 self.findings_table.setItem(i, j, item)
 
-    def update_ops_center(self, task_runs: list[dict], events: list[dict]):
+    def update_verification_effectiveness(self, payload: dict):
+        eff = payload or {}
+        blocked = int(eff.get("blocked_buy_count", 0) or 0)
+        avoided = int(eff.get("avoided_losses", 0) or 0)
+        missed = int(eff.get("missed_gains", 0) or 0)
+        annotated = int(eff.get("annotated_buy_count", 0) or 0)
+        verified = int(eff.get("verified_candidates", 0) or 0)
+        questionable = int(eff.get("questionable_candidates", 0) or 0)
+        rejected = int(eff.get("rejected_candidates", 0) or 0)
+        avoided_rate = float(eff.get("avoided_loss_rate", 0) or 0)
+
+        self.verification_effect_label.setText(
+            "验证守门效果："
+            f"通过候选 {verified} | 存疑候选 {questionable} | 高风险候选 {rejected} | "
+            f"拦截买入 {blocked} | 避免亏损 {avoided} | 错过上涨 {missed}"
+        )
+
+        lines = [
+            f"避免亏损率: {avoided_rate:.1f}%",
+            f"存疑放行次数: {annotated}",
+        ]
+        if blocked > 0:
+            lines.append("说明: 被拦截买入会做后验校准，用来判断验证层是否过严或过松。")
+        else:
+            lines.append("说明: 暂无被拦截买入样本，继续积累数据后再评估守门质量。")
+        self.verification_effect_text.setText("\n".join(lines))
+
+    def update_coordinator_effectiveness(self, payload: dict, config: dict | None = None):
+        eff = payload or {}
+        cfg = config or {}
+        routed = int(eff.get("routed_blocked_count", 0) or 0)
+        avoided = int(eff.get("avoided_losses", 0) or 0)
+        missed = int(eff.get("missed_gains", 0) or 0)
+        avoided_rate = float(eff.get("avoided_loss_rate", 0) or 0)
+        sell_only = int(eff.get("sell_only_count", 0) or 0)
+        limit_buy = int(eff.get("limit_buy_count", 0) or 0)
+        observe_only = int(eff.get("observe_only_count", 0) or 0)
+
+        self.coordinator_effect_label.setText(
+            "协调者分流效果："
+            f"分流拦截 {routed} | 避免亏损 {avoided} | 错过上涨 {missed} | "
+            f"避免亏损率 {avoided_rate:.1f}%"
+        )
+
+        lines = [
+            f"触发次数: sell_only {sell_only} | limit_buy {limit_buy} | observe_only {observe_only}",
+            (
+                "当前参数: "
+                f"sell_only舆情<{float(cfg.get('sell_only_sentiment_ratio', 0) or 0):.2f} | "
+                f"limit_buy舆情<{float(cfg.get('limit_buy_sentiment_ratio', 0) or 0):.2f} | "
+                f"限买 {int(cfg.get('limit_buy_max_count', 0) or 0)} 条 | "
+                f"观察模式守门拦截率>={float(cfg.get('observe_blocked_ratio', 0) or 0):.2f}"
+            ),
+        ]
+        note = str(cfg.get("last_learning_note", "") or "")
+        if note:
+            lines.append(f"最近调参: {note}")
+        elif routed > 0:
+            lines.append("说明: 分流样本已进入后验校准，用来判断协调者是否过严或过松。")
+        else:
+            lines.append("说明: 暂无分流拦截样本，继续积累数据后再评估调参。")
+        self.coordinator_effect_text.setText("\n".join(lines))
+
+    def update_coordinator_orchestration(self, orchestration: list[dict]):
+        self._coordinator_orch_items = list(orchestration or [])
+        if self._coordinator_orch_items:
+            action_total = sum(
+                len((item.get("actions_done", item.get("actions", [])) or []))
+                for item in self._coordinator_orch_items
+                if isinstance(item, dict)
+            )
+            self.coordinator_orch_label.setText(
+                f"Coordinator 编排：{len(self._coordinator_orch_items)} 个阶段检查 | 动作 {action_total} 个"
+            )
+        else:
+            self.coordinator_orch_label.setText("Coordinator 编排：暂无记录，运行全流程后展示")
+            self.coordinator_orch_detail.clear()
+
+        self.coordinator_orch_table.setRowCount(len(self._coordinator_orch_items))
+        for i, item in enumerate(self._coordinator_orch_items):
+            actions = item.get("actions_done", item.get("actions", [])) or []
+            action_names = [
+                str(action.get("type", ""))
+                + (f"/{action.get('status')}" if action.get("status") else "")
+                for action in actions
+                if isinstance(action, dict)
+            ]
+            vals = [
+                item.get("stage", ""),
+                "是" if bool(item.get("ready", True)) else "否",
+                item.get("mode", ""),
+                str(len(actions)),
+                ", ".join(action_names[:2]) + ("..." if len(action_names) > 2 else ""),
+                item.get("reason", ""),
+            ]
+            for j, v in enumerate(vals):
+                table_item = QTableWidgetItem(str(v))
+                table_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                if j == 1:
+                    table_item.setForeground(QColor("#66bb6a" if v == "是" else "#ffb74d"))
+                if j == 2 and str(v) not in {"normal", ""}:
+                    table_item.setForeground(QColor("#4fc3f7"))
+                self.coordinator_orch_table.setItem(i, j, table_item)
+        if self._coordinator_orch_items:
+            self._render_coordinator_orch_detail(0)
+
+    def _on_coordinator_orch_row_clicked(self, row: int, col: int):
+        self._render_coordinator_orch_detail(row)
+
+    def _render_coordinator_orch_detail(self, row: int):
+        if row < 0 or row >= len(self._coordinator_orch_items):
+            return
+        item = self._coordinator_orch_items[row]
+        payload = {
+            "stage": item.get("stage", ""),
+            "ready": bool(item.get("ready", True)),
+            "mode": item.get("mode", ""),
+            "reason": item.get("reason", ""),
+            "actions": item.get("actions", []),
+            "actions_done": item.get("actions_done", []),
+            "timestamp": item.get("timestamp", ""),
+        }
+        self.coordinator_orch_detail.setText(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
+
+    def update_agent_trace(self, trace_items: list[dict], trace_context: dict | None = None):
+        self._agent_trace_items = list(trace_items or [])
+        ctx = trace_context or {}
+        trace_id = str(ctx.get("trace_id_hex", "") or ctx.get("trace_id", "") or "")
+        status = str(ctx.get("status", "") or "-")
+        duration = ctx.get("duration_ms", "-")
+        if self._agent_trace_items:
+            self.agent_trace_label.setText(
+                f"Agent Trace：{len(self._agent_trace_items)} spans | "
+                f"trace={trace_id[:24] or '-'} | status={status} | duration={duration}ms"
+            )
+        else:
+            self.agent_trace_label.setText("Agent Trace：暂无 span，运行全流程后展示")
+            self.agent_trace_detail.clear()
+
+        self.agent_trace_table.setRowCount(len(self._agent_trace_items))
+        for i, span in enumerate(self._agent_trace_items):
+            output_summary = span.get("output_summary", {}) or {}
+            summary = self._short_trace_summary(output_summary)
+            vals = [
+                span.get("agent_key", ""),
+                span.get("stage", ""),
+                span.get("status", ""),
+                str(span.get("duration_ms", "")),
+                str(span.get("span_id", ""))[:10],
+                summary,
+            ]
+            for j, v in enumerate(vals):
+                item = QTableWidgetItem(str(v))
+                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                if j == 2:
+                    color = "#66bb6a" if v == "ok" else "#ef5350" if v == "error" else "#ffb74d"
+                    item.setForeground(QColor(color))
+                self.agent_trace_table.setItem(i, j, item)
+        if self._agent_trace_items:
+            self._render_agent_trace_detail(0)
+
+    def _short_trace_summary(self, summary: dict) -> str:
+        if not isinstance(summary, dict) or not summary:
+            return "-"
+        parts = []
+        for key, value in list(summary.items())[:3]:
+            if isinstance(value, dict):
+                if "count" in value:
+                    parts.append(f"{key}:{value.get('count')}")
+                elif "keys" in value:
+                    parts.append(f"{key}:dict")
+                else:
+                    parts.append(f"{key}:obj")
+            else:
+                text = str(value).replace("\n", " ")
+                parts.append(f"{key}:{text[:18]}")
+        return " | ".join(parts) if parts else "-"
+
+    def _on_agent_trace_row_clicked(self, row: int, col: int):
+        self._render_agent_trace_detail(row)
+
+    def _render_agent_trace_detail(self, row: int):
+        if row < 0 or row >= len(self._agent_trace_items):
+            return
+        span = self._agent_trace_items[row]
+        payload = {
+            "agent": span.get("agent_key", ""),
+            "stage": span.get("stage", ""),
+            "status": span.get("status", ""),
+            "duration_ms": span.get("duration_ms", 0),
+            "trace_id_hex": span.get("trace_id_hex", ""),
+            "span_id": span.get("span_id", ""),
+            "parent_span_id": span.get("parent_span_id", ""),
+            "input_summary": span.get("input_summary", {}),
+            "output_summary": span.get("output_summary", {}),
+        }
+        if span.get("error"):
+            payload["error"] = span.get("error", "")
+        self.agent_trace_detail.setText(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
+
+    def update_ops_center(
+        self,
+        task_runs: list[dict],
+        events: list[dict],
+        daemon: dict | None = None,
+        registry: dict | None = None,
+        openclaw_status: dict | None = None,
+    ):
         self.task_run_table.setRowCount(len(task_runs))
         for i, r in enumerate(task_runs):
             vals = [
@@ -655,6 +1169,204 @@ class OpenClawPanel(QWidget):
                     color = "#ef5350" if v == "error" else "#ffb74d" if v == "warning" else "#4fc3f7"
                     item.setForeground(QColor(color))
                 self.event_log_table.setItem(i, j, item)
+        daemon = daemon or {}
+        active = bool(daemon.get("active", False))
+        pid = int(daemon.get("leader_pid", 0) or 0)
+        hb = str(daemon.get("heartbeat_at", "") or "-")
+        self.daemon_status_label.setText(f"Daemon: {'🟢 运行中' if active else '🔴 未运行'}  PID:{pid or '-'}  心跳:{hb}")
+        self.daemon_status_label.setStyleSheet(
+            (
+                f"color:#66bb6a; font-size:{APP_FONT['body']}px;"
+                if active
+                else f"color:#ef5350; font-size:{APP_FONT['body']}px;"
+            )
+        )
+        next_task = daemon.get("next_task", {}) or {}
+        next_name = str(next_task.get("task_name", "") or "-")
+        next_time = str(next_task.get("scheduled_at", "") or "-")
+        self.daemon_next_task_label.setText(f"下一任务: {next_name} @ {next_time}")
+        self.update_openclaw_daemon_status(openclaw_status or {})
+        self.update_agent_registry(registry or {})
+
+    def update_openclaw_daemon_status(self, payload: dict):
+        daemon = (payload or {}).get("daemon", {}) or {}
+        openclaw = (payload or {}).get("openclaw", {}) or {}
+        guard = (payload or {}).get("trade_guard", {}) or {}
+        config = openclaw.get("config", {}) or {}
+        config_audit = openclaw.get("config_audit", {}) or {}
+        readiness = openclaw.get("readiness", {}) or {}
+        last_run = openclaw.get("last_run", {}) or {}
+        alert_state = openclaw.get("alert_state", {}) or {}
+        alert_policy = openclaw.get("alert_policy", {}) or {}
+        guard_cfg = guard.get("config", {}) or {}
+        usage = guard.get("usage", {}) or {}
+        simulation = guard.get("simulation", {}) or {}
+        replay = guard.get("replay", {}) or {}
+        trace = last_run.get("agent_trace", {}) or {}
+        orchestration = last_run.get("coordinator_orchestration", {}) or {}
+
+        active = bool(daemon.get("active", False))
+        enabled = bool(config.get("enabled", False))
+        time_text = str(config.get("time", "-") or "-")
+        boards = "、".join([str(x) for x in config.get("boards", [])][:5]) or "-"
+        self.openclaw_daemon_config_label.setText(
+            f"配置: {'启用' if enabled else '停用'} | {time_text} | 板块 {boards}"
+        )
+
+        status = str(last_run.get("status", "") or "-")
+        status_text = {"success": "成功", "warning": "告警", "error": "失败"}.get(status, status)
+        summary = str(last_run.get("summary", "") or "-")
+        ts = str(last_run.get("timestamp", "") or "-")[:19]
+        self.openclaw_daemon_last_run_label.setText(
+            f"上次执行: {status_text} | {ts} | {summary[:80]}"
+        )
+        last_color = "#66bb6a" if status == "success" else "#ef5350" if status == "error" else "#ffb74d"
+        self.openclaw_daemon_last_run_label.setStyleSheet(
+            f"color:{last_color}; font-size:{APP_FONT['caption']}px;"
+        )
+
+        consecutive = int(alert_state.get("consecutive_errors", 0) or 0)
+        suppressed = int(alert_state.get("suppressed_count", 0) or 0)
+        escalated = bool(alert_state.get("escalated", False))
+        self.openclaw_daemon_alert_label.setText(
+            f"告警: {'启用' if alert_policy.get('enabled', True) else '停用'} | "
+            f"静默 {alert_policy.get('suppress_seconds', '-')}s | 升级 {alert_policy.get('escalate_after', '-')}次 | "
+            f"连续失败 {consecutive} | 抑制 {suppressed} | {'已升级' if escalated else '未升级'}"
+        )
+
+        buy_enabled = bool(guard_cfg.get("unattended_buy_enabled", False))
+        buy_count = int(usage.get("buy_count", 0) or 0)
+        buy_amount = float(usage.get("buy_amount", 0) or 0)
+        sim_passed = bool(simulation.get("passed", False))
+        sim_runs = int(simulation.get("consecutive_success_runs", 0) or 0)
+        sim_required = int(simulation.get("required_runs", 0) or 0)
+        self.openclaw_daemon_guard_label.setText(
+            f"安全闸: 无人买入 {'开启' if buy_enabled else '关闭'} | 今日 {buy_count}笔/{buy_amount:.0f} | "
+            f"仿真 {'通过' if sim_passed else '未通过'} {sim_runs}/{sim_required}"
+        )
+        self.openclaw_daemon_summary.setText(
+            f"就绪度 {readiness.get('status', '-')} | "
+            f"{str(readiness.get('summary', '') or '')[:80]} | "
+            f"Daemon {'运行中' if active else '未运行'} | OpenClaw {'启用' if enabled else '停用'} | "
+            f"最近状态 {status_text} | Trace {int(trace.get('span_count', 0) or 0)} spans | "
+            f"编排 {int(orchestration.get('stage_count', 0) or 0)} 阶段"
+        )
+        readiness_color = {
+            "ready": "#66bb6a",
+            "warning": "#ffb74d",
+            "error": "#ef5350",
+        }.get(str(readiness.get("status", "")), "#cbd5e1")
+        self.openclaw_daemon_summary.setStyleSheet(
+            f"color:{readiness_color}; font-size:{APP_FONT['caption']}px; padding:4px 0;"
+        )
+
+        history = list(openclaw.get("history", []) or [])[:10]
+        self.openclaw_daemon_history_table.setRowCount(len(history))
+        for i, item in enumerate(history):
+            sim = item.get("simulation", {}) or {}
+            vals = [
+                str(item.get("timestamp", "") or "")[:19],
+                str(item.get("status", "") or ""),
+                str(item.get("mode", "") or ""),
+                str(item.get("blocked_count", 0) or 0),
+                str(item.get("trace_span_count", 0) or 0),
+                f"{item.get('orchestration_stage_count', 0) or 0}/{item.get('orchestration_action_count', 0) or 0}",
+                f"{'通过' if sim.get('passed') else '未过'} {sim.get('consecutive_success_runs', 0)}/{sim.get('required_runs', 0)}",
+                str(item.get("summary", "") or "")[:80],
+            ]
+            for j, v in enumerate(vals):
+                table_item = QTableWidgetItem(str(v))
+                table_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                if j == 1:
+                    color = "#66bb6a" if v == "success" else "#ef5350" if v == "error" else "#ffb74d"
+                    table_item.setForeground(QColor(color))
+                self.openclaw_daemon_history_table.setItem(i, j, table_item)
+
+        replay_last = replay.get("last", {}) or {}
+        replay_history = list(replay.get("history", []) or [])[:10]
+        if replay_last:
+            self.openclaw_guard_replay_label.setText(
+                "安全闸回放："
+                f"{str(replay_last.get('timestamp', '') or '-')[:19]} | "
+                f"输入 {replay_last.get('input_count', 0)} | "
+                f"通过 {replay_last.get('approved_count', 0)} | "
+                f"拒绝 {replay_last.get('rejected_count', 0)}"
+            )
+        else:
+            self.openclaw_guard_replay_label.setText("安全闸回放：暂无记录")
+        self.openclaw_guard_replay_table.setRowCount(len(replay_history))
+        for i, item in enumerate(replay_history):
+            ok = bool(item.get("ok", False))
+            vals = [
+                str(item.get("timestamp", "") or "")[:19],
+                str(item.get("source", "") or ""),
+                str(item.get("mode", "") or ""),
+                str(item.get("input_count", 0) or 0),
+                str(item.get("approved_count", 0) or 0),
+                str(item.get("rejected_count", 0) or 0),
+                "OK" if ok else str(item.get("message", "FAIL") or "FAIL")[:30],
+            ]
+            for j, v in enumerate(vals):
+                table_item = QTableWidgetItem(str(v))
+                table_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                if j == 6:
+                    table_item.setForeground(QColor("#66bb6a" if ok else "#ef5350"))
+                self.openclaw_guard_replay_table.setItem(i, j, table_item)
+
+        audit_history = list(config_audit.get("history", []) or [])[:10]
+        if audit_history:
+            latest = audit_history[0]
+            self.openclaw_config_audit_label.setText(
+                "配置审计："
+                f"{str(latest.get('timestamp', '') or '-')[:19]} | "
+                f"{latest.get('domain', '')}/{latest.get('action', '')} | "
+                f"{', '.join(latest.get('changed_keys', [])[:4])}"
+            )
+        else:
+            self.openclaw_config_audit_label.setText("配置审计：暂无记录")
+        self.openclaw_config_audit_table.setRowCount(len(audit_history))
+        for i, item in enumerate(audit_history):
+            vals = [
+                str(item.get("timestamp", "") or "")[:19],
+                str(item.get("domain", "") or ""),
+                str(item.get("action", "") or ""),
+                ", ".join([str(x) for x in item.get("changed_keys", [])[:5]]),
+                str(item.get("actor", "") or ""),
+            ]
+            for j, v in enumerate(vals):
+                table_item = QTableWidgetItem(str(v))
+                table_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                self.openclaw_config_audit_table.setItem(i, j, table_item)
+
+    def update_agent_registry(self, registry: dict):
+        agents = list((registry or {}).get("agents", []) or [])
+        agent_count = int((registry or {}).get("agent_count", len(agents)) or 0)
+        meta = (registry or {}).get("meta", {}) or {}
+        token = str(meta.get("change_token", "") or "")[:12]
+        payload_mode = "full" if agents else "compact/empty"
+        self.agent_registry_label.setText(
+            f"已注册智能体 {agent_count} 个 | payload={payload_mode} | token={token or '-'}"
+        )
+        self.agent_registry_table.setRowCount(len(agents))
+        for i, agent in enumerate(agents):
+            capabilities = "、".join([str(x) for x in agent.get("capabilities", [])][:4])
+            if len(agent.get("capabilities", []) or []) > 4:
+                capabilities += "..."
+            vals = [
+                agent.get("key", ""),
+                agent.get("display_name", ""),
+                agent.get("stage", ""),
+                agent.get("safety_level", ""),
+                capabilities,
+                agent.get("entrypoint", ""),
+            ]
+            for j, v in enumerate(vals):
+                item = QTableWidgetItem(str(v))
+                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                if j == 3:
+                    color = "#66bb6a" if v == "read_only" else "#ffb74d" if v == "approval_required" else "#4fc3f7"
+                    item.setForeground(QColor(color))
+                self.agent_registry_table.setItem(i, j, item)
 
     # ═══════════════════════════════════════════
     #  公共更新方法
