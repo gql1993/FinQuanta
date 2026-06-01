@@ -541,7 +541,9 @@ def run_unattended_trade_guard_replay(payload: dict | None = None) -> dict:
     rows = payload.get("items") or payload.get("decisions") or []
     source = "request"
     if not isinstance(rows, list) or not rows:
-        rows = get_kv_json("last_scan_results", []) or []
+        from desktop.scan_store import resolve_scan_results
+
+        rows = resolve_scan_results()[0]
         source = "last_scan_results"
     if not isinstance(rows, list):
         rows = []

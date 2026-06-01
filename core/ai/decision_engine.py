@@ -12,12 +12,14 @@ from typing import Callable
 
 from core.ai.context_builder import (
     build_ai_portfolio_context_text,
+    build_candidates_context,
     build_candidates_context_text,
-    build_decision_history_context_text,
-    build_learning_feedback_context_text,
+    build_decision_memory_context_text,
     build_market_context_text,
     build_rotation_context_text,
+    parse_board_tokens,
 )
+from core.ai.decision_grounding import build_grounded_price_map, normalize_buy_decisions
 from core.ai.decision_models import (
     build_decision_result,
     build_error_result,
@@ -33,8 +35,7 @@ def build_ai_decision_prompt(
     market = build_market_context_text()
     portfolio = build_ai_portfolio_context_text(mode)
     candidates = build_candidates_context_text(board=board)
-    history = build_decision_history_context_text()
-    evolution = build_learning_feedback_context_text()
+    memory_context = build_decision_memory_context_text(boards=parse_board_tokens(board))
     rotation = build_rotation_context_text()
     return f"""请基于以下数据做出交易决策：
 
@@ -44,9 +45,7 @@ def build_ai_decision_prompt(
 
 {candidates}
 
-{history}
-
-{evolution}
+{memory_context}
 
 {rotation}
 
@@ -85,6 +84,33 @@ def parse_ai_decision_response(response: str) -> dict:
         )
 
 
+def apply_decision_price_grounding(
+    result: dict,
+    *,
+    board: str = "人工智能",
+    limit: int = 30,
+    price_map: dict[str, float] | None = None,
+) -> dict:
+    """Ground buy prices in a parsed decision result dict."""
+    decisions = result.get("decisions") or []
+    if not decisions:
+        return result
+
+    grounded_map = price_map or build_grounded_price_map(
+        build_candidates_context(board=board, limit=limit).get("items", [])
+    )
+    raw_decisions = [
+        item.to_dict() if hasattr(item, "to_dict") else dict(item)
+        for item in decisions
+        if isinstance(item, dict) or hasattr(item, "to_dict")
+    ]
+    normalized, adjustments = normalize_buy_decisions(raw_decisions, grounded_map)
+    result["decisions"] = normalized
+    if adjustments:
+        result["decision_grounding"] = {"adjustments": adjustments}
+    return result
+
+
 def run_ai_decision(
     llm_call: Callable[[str, str], str],
     board: str = "人工智能",
@@ -93,4 +119,5 @@ def run_ai_decision(
 ) -> dict:
     prompt = build_ai_decision_prompt(board=board, mode=mode, extra_prompt=extra_prompt)
     response = llm_call(prompt, system=get_ai_decision_system_prompt())
-    return parse_ai_decision_response(response)
+    result = parse_ai_decision_response(response)
+    return apply_decision_price_grounding(result, board=board)

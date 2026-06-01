@@ -687,6 +687,185 @@ class IntelligenceAgent:
         return "\n".join(lines)
 
 
+def _adapt_pipeline_candidate(item: dict) -> dict | None:
+    """Map OpenClaw S2 pipeline candidates into AnalysisAgent candidate shape."""
+    if not isinstance(item, dict):
+        return None
+    code = str(item.get("code", "") or "").strip()
+    if not code:
+        return None
+
+    try:
+        score = int(float(item.get("score", item.get("total", 0)) or 0))
+    except (TypeError, ValueError):
+        score = 0
+    try:
+        momentum_1m = float(item.get("momentum_1m", 0) or 0)
+    except (TypeError, ValueError):
+        momentum_1m = 0.0
+    try:
+        price = round(float(item.get("price", 0) or 0), 2)
+    except (TypeError, ValueError):
+        price = 0.0
+
+    momentum_score = min(100, max(0, 50 + momentum_1m * 3))
+    signals: list[str] = []
+    strategy = str(item.get("strategy", "") or "").strip()
+    if strategy:
+        signals.append(strategy)
+    if momentum_1m > 3:
+        signals.append(f"1月动量{momentum_1m:+.1f}%")
+    if item.get("source") == "last_scan_results":
+        signals.append("S2管线")
+
+    return {
+        "code": code,
+        "name": str(item.get("name", "") or code),
+        "board": str(item.get("board", "") or ""),
+        "price": price,
+        "trend": max(20, min(80, int(score * 0.7))),
+        "momentum": round(momentum_score),
+        "volume": 50,
+        "total": min(100, score),
+        "signals": signals,
+        "candidate_source": "openclaw_s2",
+    }
+
+
+def adapt_pipeline_candidates(candidates: list[dict] | None) -> list[dict]:
+    """Convert a pipeline candidate list to AnalysisAgent-ready payloads."""
+    adapted: list[dict] = []
+    seen: set[str] = set()
+    for item in candidates or []:
+        payload = _adapt_pipeline_candidate(item)
+        if not payload:
+            continue
+        code = payload["code"]
+        if code in seen:
+            continue
+        seen.add(code)
+        adapted.append(payload)
+    adapted.sort(key=lambda row: row.get("total", 0), reverse=True)
+    return adapted
+
+
+def _build_analysis_candidate_from_kline(
+    code: str,
+    board: str,
+    names: dict[str, str],
+    conn: RepoCompatConnection,
+) -> dict | None:
+    """Score one stock from local kline data for AnalysisAgent output."""
+    cur2 = conn.execute(
+        "SELECT close, high, low, volume FROM daily_kline WHERE code=? ORDER BY date DESC LIMIT 60",
+        (code,),
+    )
+    rows = cur2.fetchall()
+    if len(rows) < 20:
+        return None
+    rows = rows[::-1]
+    closes = np.array([r[0] for r in rows])
+    vols = np.array([r[3] for r in rows])
+    n = len(closes)
+    price = float(closes[-1])
+    if price <= 0:
+        return None
+
+    ma20 = float(np.mean(closes[-20:]))
+    ma50 = float(np.mean(closes[-50:])) if n >= 50 else ma20
+    if price > ma20 > ma50:
+        trend_score = 80
+    elif price > ma20:
+        trend_score = 60
+    elif price < ma20 < ma50:
+        trend_score = 20
+    else:
+        trend_score = 40
+
+    mom5 = (closes[-1] / closes[-6] - 1) * 100 if n >= 6 else 0
+    mom20 = (closes[-1] / closes[-21] - 1) * 100 if n >= 21 else 0
+    momentum_score = min(100, max(0, 50 + mom5 * 3 + mom20))
+
+    vol_avg = float(np.mean(vols[-20:])) if n >= 20 and np.mean(vols[-20:]) > 0 else 1
+    vol_ratio = float(vols[-1]) / vol_avg
+    volume_score = min(100, int(vol_ratio * 40))
+
+    total = int(trend_score * 0.4 + momentum_score * 0.3 + volume_score * 0.3)
+
+    signals: list[str] = []
+    if trend_score >= 70:
+        signals.append("多头趋势")
+    if mom5 > 3:
+        signals.append(f"5日强势{mom5:+.1f}%")
+    if vol_ratio > 1.5:
+        signals.append("放量")
+
+    try:
+        cur_f = conn.execute(
+            "SELECT holding_funds, change_type FROM fund_holdings WHERE code=? LIMIT 1",
+            (code,),
+        )
+        fr = cur_f.fetchone()
+        if fr and fr[0] and fr[0] >= 100:
+            total += 5
+            signals.append(f"基金{fr[0]}只")
+        if fr and fr[1] and "增持" in str(fr[1]):
+            total += 5
+            signals.append("基金增持")
+    except Exception:
+        pass
+
+    return {
+        "code": code,
+        "name": names.get(code, ""),
+        "board": board,
+        "price": round(price, 2),
+        "trend": trend_score,
+        "momentum": round(momentum_score),
+        "volume": volume_score,
+        "total": min(100, total),
+        "signals": signals,
+    }
+
+
+def _enrich_pipeline_candidates(candidates: list[dict], conn: RepoCompatConnection) -> list[dict]:
+    """Fill trend/momentum/volume from kline when available, preserving S2 totals."""
+    names: dict[str, str] = {}
+    try:
+        cur_n = conn.execute("SELECT code, name FROM stock_list")
+        names = {r[0]: r[1] for r in cur_n.fetchall()}
+    except Exception:
+        pass
+
+    enriched: list[dict] = []
+    for item in candidates:
+        code = str(item.get("code", "") or "")
+        board = str(item.get("board", "") or "")
+        kline_candidate = _build_analysis_candidate_from_kline(code, board, names, conn)
+        if kline_candidate:
+            merged = dict(item)
+            merged.update(
+                {
+                    "name": kline_candidate.get("name") or merged.get("name", ""),
+                    "price": kline_candidate.get("price", merged.get("price", 0)),
+                    "trend": kline_candidate.get("trend", merged.get("trend", 0)),
+                    "momentum": kline_candidate.get("momentum", merged.get("momentum", 0)),
+                    "volume": kline_candidate.get("volume", merged.get("volume", 0)),
+                }
+            )
+            merged_signals = list(dict.fromkeys(
+                list(merged.get("signals", []) or []) + list(kline_candidate.get("signals", []) or [])
+            ))
+            merged["signals"] = merged_signals
+            if int(merged.get("total", 0) or 0) <= 0:
+                merged["total"] = kline_candidate.get("total", 0)
+            enriched.append(merged)
+        else:
+            enriched.append(item)
+    enriched.sort(key=lambda row: row.get("total", 0), reverse=True)
+    return enriched
+
+
 class AnalysisAgent:
     """
     分析智能体：基于情报数据做多维度策略分析，输出评分和信号。
@@ -705,7 +884,11 @@ class AnalysisAgent:
     )
 
     @staticmethod
-    def analyze(intel_report: dict, boards: list[str] = None) -> dict:
+    def analyze(
+        intel_report: dict,
+        boards: list[str] = None,
+        prefilled_candidates: list[dict] | None = None,
+    ) -> dict:
         """基于情报做策略分析。"""
         if not boards:
             return {"agent": "analysis", "candidates": [], "market_regime": "未指定板块"}
@@ -713,90 +896,35 @@ class AnalysisAgent:
         conn = RepoCompatConnection()
         conn.execute("PRAGMA journal_mode=WAL")
 
+        pipeline_candidates = adapt_pipeline_candidates(prefilled_candidates)
+        if pipeline_candidates:
+            candidates = _enrich_pipeline_candidates(pipeline_candidates, conn)
+            conn.close()
+            return {
+                "agent": "analysis",
+                "timestamp": datetime.now().isoformat(),
+                "candidates": candidates[:30],
+                "market_regime": _detect_regime(intel_report),
+                "candidate_source": "openclaw_s2",
+                "prefilled_count": len(pipeline_candidates),
+            }
+
+        names: dict[str, str] = {}
+        try:
+            cur_n = conn.execute("SELECT code, name FROM stock_list")
+            names = {r[0]: r[1] for r in cur_n.fetchall()}
+        except Exception:
+            pass
+
         candidates = []
         for board in boards[:5]:
             cur = conn.execute("SELECT code FROM board_stocks WHERE board=?", (board,))
             codes = [r[0] for r in cur.fetchall()]
 
-            names = {}
-            try:
-                cur_n = conn.execute("SELECT code, name FROM stock_list")
-                names = {r[0]: r[1] for r in cur_n.fetchall()}
-            except Exception:
-                pass
-
             for code in codes[:20]:
-                cur2 = conn.execute(
-                    "SELECT close, high, low, volume FROM daily_kline WHERE code=? ORDER BY date DESC LIMIT 60",
-                    (code,),
-                )
-                rows = cur2.fetchall()
-                if len(rows) < 20:
-                    continue
-                rows = rows[::-1]
-                closes = np.array([r[0] for r in rows])
-                vols = np.array([r[3] for r in rows])
-                n = len(closes)
-                price = float(closes[-1])
-                if price <= 0:
-                    continue
-
-                # 趋势分
-                ma20 = float(np.mean(closes[-20:]))
-                ma50 = float(np.mean(closes[-50:])) if n >= 50 else ma20
-                trend_score = 0
-                if price > ma20 > ma50:
-                    trend_score = 80
-                elif price > ma20:
-                    trend_score = 60
-                elif price < ma20 < ma50:
-                    trend_score = 20
-                else:
-                    trend_score = 40
-
-                # 动量分
-                mom5 = (closes[-1] / closes[-6] - 1) * 100 if n >= 6 else 0
-                mom20 = (closes[-1] / closes[-21] - 1) * 100 if n >= 21 else 0
-                momentum_score = min(100, max(0, 50 + mom5 * 3 + mom20))
-
-                # 量能分
-                vol_avg = float(np.mean(vols[-20:])) if n >= 20 and np.mean(vols[-20:]) > 0 else 1
-                vol_ratio = float(vols[-1]) / vol_avg
-                volume_score = min(100, int(vol_ratio * 40))
-
-                # 综合
-                total = int(trend_score * 0.4 + momentum_score * 0.3 + volume_score * 0.3)
-
-                signals = []
-                if trend_score >= 70:
-                    signals.append("多头趋势")
-                if mom5 > 3:
-                    signals.append(f"5日强势{mom5:+.1f}%")
-                if vol_ratio > 1.5:
-                    signals.append("放量")
-
-                # 基金持仓加分
-                try:
-                    cur_f = conn.execute(
-                        "SELECT holding_funds, change_type FROM fund_holdings WHERE code=? LIMIT 1", (code,)
-                    )
-                    fr = cur_f.fetchone()
-                    if fr and fr[0] and fr[0] >= 100:
-                        total += 5
-                        signals.append(f"基金{fr[0]}只")
-                    if fr and fr[1] and "增持" in str(fr[1]):
-                        total += 5
-                        signals.append("基金增持")
-                except Exception:
-                    pass
-
-                candidates.append({
-                    "code": code, "name": names.get(code, ""),
-                    "board": board, "price": round(price, 2),
-                    "trend": trend_score, "momentum": round(momentum_score),
-                    "volume": volume_score, "total": min(100, total),
-                    "signals": signals,
-                })
+                payload = _build_analysis_candidate_from_kline(code, board, names, conn)
+                if payload:
+                    candidates.append(payload)
 
         conn.close()
         candidates.sort(key=lambda x: x["total"], reverse=True)
@@ -806,6 +934,7 @@ class AnalysisAgent:
             "timestamp": datetime.now().isoformat(),
             "candidates": candidates[:30],
             "market_regime": _detect_regime(intel_report),
+            "candidate_source": "board_scan",
         }
 
     @staticmethod
@@ -1017,6 +1146,19 @@ class VerificationAgent:
         return "\n".join(lines)
 
 
+def _format_verified_candidate_line(item: dict) -> str:
+    try:
+        price = float(item.get("price", 0) or 0)
+    except (TypeError, ValueError):
+        price = 0.0
+    price_text = f"现价¥{price:.2f}" if price > 0 else "现价未知"
+    return (
+        f"- {item.get('code','')} {item.get('name','')} {price_text} "
+        f"综合{item.get('total', 0)} 验证{item.get('verification_score', 0)} "
+        f"板块风险={item.get('board_risk_level', 'low')}"
+    )
+
+
 def _build_verified_candidate_context(verification: dict) -> str:
     lines = ["===== 验证后候选清单 ====="]
     verified = verification.get("verified_candidates", []) or []
@@ -1026,11 +1168,7 @@ def _build_verified_candidate_context(verification: dict) -> str:
     if verified:
         lines.append("\n【优先参考候选（已通过验证）】")
         for item in verified[:12]:
-            lines.append(
-                f"- {item.get('code','')} {item.get('name','')} "
-                f"综合{item.get('total', 0)} 验证{item.get('verification_score', 0)} "
-                f"板块风险={item.get('board_risk_level', 'low')}"
-            )
+            lines.append(_format_verified_candidate_line(item))
     else:
         lines.append("\n【优先参考候选（已通过验证）】无")
 
@@ -1038,22 +1176,15 @@ def _build_verified_candidate_context(verification: dict) -> str:
         lines.append("\n【谨慎参考候选（需二次确认）】")
         for item in questionable[:12]:
             note = "；".join(item.get("verification_notes", [])[:2]) or "-"
-            lines.append(
-                f"- {item.get('code','')} {item.get('name','')} "
-                f"综合{item.get('total', 0)} 验证{item.get('verification_score', 0)} "
-                f"{note}"
-            )
+            lines.append(f"{_format_verified_candidate_line(item)} {note}")
 
     if rejected:
         lines.append("\n【原则上不新开仓候选】")
         for item in rejected[:12]:
             note = "；".join(item.get("verification_notes", [])[:2]) or "-"
-            lines.append(
-                f"- {item.get('code','')} {item.get('name','')} "
-                f"综合{item.get('total', 0)} 验证{item.get('verification_score', 0)} "
-                f"{note}"
-            )
+            lines.append(f"{_format_verified_candidate_line(item)} {note}")
 
+    lines.append("\n【价格约束】以上现价为系统快照，买入决策中的 price 必须与清单一致，不得自行估算。")
     return "\n".join(lines)
 
 
@@ -1690,20 +1821,29 @@ class DecisionAgent:
         verification_prompt: str,
         candidate_context: str,
         portfolio_context: str,
+        *,
+        reflection_context: str = "",
+        learning_context: str = "",
     ) -> str:
         """调用 LLM 做最终决策。"""
+        from core.ai.prompt_registry import get_decision_agent_system_prompt
         from desktop.ai_trader import _call_llm
 
-        prompt = (
-            f"以下是情报智能体、分析智能体、验证智能体的报告，请做出最终交易决策。\n\n"
-            f"{intel_prompt}\n\n"
-            f"{analysis_prompt}\n\n"
-            f"{verification_prompt}\n\n"
-            f"{candidate_context}\n\n"
-            f"{portfolio_context}\n\n"
-            f"请输出 JSON 格式的交易决策："
-        )
-        return _call_llm(prompt, system=DecisionAgent.SYSTEM_PROMPT)
+        sections = [
+            "以下是情报智能体、分析智能体、验证智能体的报告，请做出最终交易决策。",
+            intel_prompt,
+            analysis_prompt,
+            verification_prompt,
+            candidate_context,
+            portfolio_context,
+        ]
+        if reflection_context.strip():
+            sections.append(reflection_context)
+        if learning_context.strip():
+            sections.append(learning_context)
+        sections.append("请输出 JSON 格式的交易决策：")
+        prompt = "\n\n".join(section for section in sections if section)
+        return _call_llm(prompt, system=get_decision_agent_system_prompt(DecisionAgent.SYSTEM_PROMPT))
 
 
 def _detect_regime(intel: dict) -> str:
@@ -1750,7 +1890,8 @@ def get_decision_accuracy(limit: int = 50) -> dict:
 
 def run_multi_agent_cycle(boards: list[str] = None, mode: str = "full_auto",
                           execute: bool = True, persist_memory: bool = True,
-                          traceparent: str = "") -> dict:
+                          traceparent: str = "",
+                          prefilled_candidates: list[dict] | None = None) -> dict:
     """
     多智能体协同决策：情报 → 分析 → 验证 → 决策 → 执行。
     execute=False 时只做分析不执行（非交易时间）。
@@ -1805,19 +1946,34 @@ def run_multi_agent_cycle(boards: list[str] = None, mode: str = "full_auto",
 
     # Step 2: 分析智能体
     _log.info("Step 2: Analysis Agent analyzing...")
+    prefilled_count = len(adapt_pipeline_candidates(prefilled_candidates))
     analysis = _agent_trace_step(
         agent_trace,
         root_traceparent,
         "analysis",
         "analyze",
-        lambda: AnalysisAgent.analyze(intel, boards),
-        inputs={"intel": intel, "boards": boards},
+        lambda: AnalysisAgent.analyze(
+            intel,
+            boards,
+            prefilled_candidates=prefilled_candidates,
+        ),
+        inputs={
+            "intel": intel,
+            "boards": boards,
+            "prefilled_count": prefilled_count,
+            "candidate_source": "openclaw_s2" if prefilled_count else "board_scan",
+        },
     )
     analysis_prompt = AnalysisAgent.to_prompt(analysis)
+    source_label = analysis.get("candidate_source", "board_scan")
+    source_note = f", 来源: {source_label}" if source_label else ""
     result["steps"].append({
         "agent": AnalysisAgent.NAME,
         "status": "✅ 完成",
-        "summary": f"评分 {len(analysis.get('candidates', []))} 只候选, 环境: {analysis.get('market_regime', '-')}",
+        "summary": (
+            f"评分 {len(analysis.get('candidates', []))} 只候选, "
+            f"环境: {analysis.get('market_regime', '-')}{source_note}"
+        ),
         "output": analysis_prompt,
     })
 
@@ -1857,6 +2013,14 @@ def run_multi_agent_cycle(boards: list[str] = None, mode: str = "full_auto",
 
     # Step 5: 决策智能体
     _log.info("Step 4: Decision Agent deciding...")
+    from core.ai.context_builder import (
+        build_decision_reflection_context_text,
+        build_learning_feedback_context_text,
+    )
+
+    reflection_context = build_decision_reflection_context_text(boards=boards)
+    learning_context = build_learning_feedback_context_text()
+    result["decision_reflection_context"] = reflection_context
     response = _agent_trace_step(
         agent_trace,
         root_traceparent,
@@ -1868,12 +2032,16 @@ def run_multi_agent_cycle(boards: list[str] = None, mode: str = "full_auto",
             verification_prompt,
             candidate_context,
             portfolio,
+            reflection_context=reflection_context,
+            learning_context=learning_context,
         ),
         inputs={
             "intel_prompt_len": len(intel_prompt),
             "analysis_prompt_len": len(analysis_prompt),
             "verification_prompt_len": len(verification_prompt),
             "candidate_context_len": len(candidate_context),
+            "reflection_context_len": len(reflection_context),
+            "learning_context_len": len(learning_context),
         },
     )
     result["steps"].append({
@@ -1896,13 +2064,24 @@ def run_multi_agent_cycle(boards: list[str] = None, mode: str = "full_auto",
         parsed = {"analysis": response, "decisions": []}
 
     raw_decisions = parsed.get("decisions", [])
+    from core.ai.decision_grounding import (
+        build_grounded_price_map_from_verification,
+        normalize_buy_decisions,
+    )
+
+    price_map = build_grounded_price_map_from_verification(verification)
+    grounded_decisions, grounding_adjustments = normalize_buy_decisions(
+        raw_decisions,
+        price_map,
+    )
+    result["decision_grounding"] = {"adjustments": grounding_adjustments}
     guardrails = _agent_trace_step(
         agent_trace,
         root_traceparent,
         "verification_guardrail",
         "guardrail",
-        lambda: _apply_verification_guardrails(raw_decisions, verification),
-        inputs={"raw_decisions": raw_decisions, "verification": verification},
+        lambda: _apply_verification_guardrails(grounded_decisions, verification),
+        inputs={"raw_decisions": grounded_decisions, "verification": verification},
     )
     result["raw_decisions"] = raw_decisions
     result["decision_guardrails"] = guardrails

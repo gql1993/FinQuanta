@@ -29,6 +29,9 @@ push_config.json
 .env.api.local
 .env.local
 
+# Research paper generated cache (reproducible via experiments/)
+research_paper/results/llm_cache/
+
 # Generated
 logs/
 claude-code-main/

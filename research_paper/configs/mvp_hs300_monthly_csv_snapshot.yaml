@@ -1,0 +1,121 @@
+experiment:
+  name: paper_v1_mvp_hs300_monthly_csv_snapshot
+  description: >
+    MVP paper experiment using a frozen CSV research snapshot. This config is a
+    template and requires snapshot CSV files before running.
+  random_seed: 20260507
+  output_dir: research_paper/results/paper_v1_mvp_hs300_monthly_csv_snapshot
+
+isolation:
+  production_imports_allowed: false
+  allow_live_trading: false
+  allow_notifications: false
+  allow_production_database_writes: false
+  llm_cache_required: true
+
+data:
+  source: csv_snapshot
+  universe: hs300
+  universe_snapshot_policy: fixed_research_manifest
+  start_date: "2018-01-01"
+  end_date: "2025-12-31"
+  snapshot:
+    returns_path: research_paper/data_snapshots/paper_v1_hs300_monthly/returns.csv
+    benchmark_path: research_paper/data_snapshots/paper_v1_hs300_monthly/benchmark.csv
+    metadata_path: research_paper/data_snapshots/paper_v1_hs300_monthly/metadata.csv
+  benchmark:
+    - hs300
+  frequency: daily
+  rebalance_frequency: monthly
+  price_adjustment: forward_adjusted
+  filters:
+    exclude_st: true
+    exclude_suspended: true
+    min_listing_days: 252
+    min_avg_daily_turnover: 10000000
+  lookahead_guard:
+    use_only_point_in_time_data: true
+    rebalance_at_next_open: true
+
+transaction_costs:
+  commission_bps: 10
+  slippage_bps: 10
+  stamp_duty_bps_sell: 5
+  max_single_period_turnover: 0.5
+
+strategy_scores:
+  enabled:
+    - sepa_stock_magician
+    - vcp
+    - momentum
+    - value_quality
+    - low_volatility
+  candidate_pool_size: 100
+  final_holdings_range:
+    min: 10
+    max: 30
+  missing_value_policy: rank_neutral
+
+agents:
+  enabled: false
+  llm_provider: configurable
+  model: configurable
+  temperature: 0.0
+  cache_dir: research_paper/results/llm_cache
+  response_format: json
+  roles:
+    market_regime_agent:
+      enabled: false
+    strategy_selection_agent:
+      enabled: false
+    sector_rotation_agent:
+      enabled: false
+    risk_control_agent:
+      enabled: false
+    portfolio_constraint_agent:
+      enabled: false
+
+optimization:
+  objective: risk_adjusted_return_with_turnover_penalty
+  methods:
+    - equal_weight
+    - multifactor_topk
+    - sepa_stock_magician_topk
+    - vcp_topk
+    - fixed_multistrategy_fusion
+    - llm_strategy_agent_mock
+  constraints:
+    long_only: true
+    max_weight_per_stock_default: 0.08
+    max_industry_weight_default: 0.25
+    cash_buffer_default: 0.0
+    turnover_limit_default: 0.5
+
+evaluation:
+  metrics:
+    - annual_return
+    - annual_volatility
+    - sharpe
+    - sortino
+    - calmar
+    - max_drawdown
+    - information_ratio
+    - win_rate
+    - monthly_win_rate
+    - turnover
+    - total_transaction_cost
+    - constraint_violation_rate
+  regime_analysis:
+    enabled: true
+    regimes:
+      - bull
+      - bear
+      - sideways
+      - high_volatility
+  statistical_tests:
+    bootstrap_confidence_interval: true
+    newey_west_adjustment: true
+    multiple_testing_correction: true
+
+ablations:
+  - no_llm_fixed_constraints

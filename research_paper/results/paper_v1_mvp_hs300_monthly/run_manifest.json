@@ -1,0 +1,13 @@
+{
+  "experiment": "paper_v1_mvp_hs300_monthly",
+  "data_mode": "synthetic_research_data",
+  "methods": [
+    "equal_weight",
+    "multifactor_topk",
+    "sepa_stock_magician_topk",
+    "vcp_topk",
+    "fixed_multistrategy_fusion",
+    "llm_strategy_agent_mock"
+  ],
+  "note": "This is an isolated dry-run baseline, not production trading output."
+}

@@ -29,10 +29,10 @@ def _load_json_file(path: str) -> list[dict]:
 
 
 def _load_last_scan_results() -> list[dict]:
-    from desktop.data_access import get_kv_json
+    from desktop.scan_store import resolve_scan_results
 
-    rows = get_kv_json("last_scan_results", []) or []
-    return rows if isinstance(rows, list) else []
+    rows, _, _ = resolve_scan_results()
+    return rows
 
 
 def build_replay_decisions(rows: list[dict], *, default_shares: int, limit: int) -> list[dict]:

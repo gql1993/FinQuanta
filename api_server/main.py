@@ -197,7 +197,31 @@ def bootstrap_runtime_dependencies():
                 time.sleep(1)
     if not auth_ok:
         _log.error("auth subsystem degraded; protected endpoints will return 503")
+    _log_prod_security_warnings()
     _autostart_daemon_if_enabled()
+
+
+def _log_prod_security_warnings() -> None:
+    """Warn on insecure prod defaults without blocking local dev startup."""
+    env = str(os.environ.get("FINQUANTA_ENV", "dev")).strip().lower()
+    if env not in {"prod", "production"}:
+        return
+    cors = str(os.environ.get("FINQUANTA_CORS_ORIGINS", "*")).strip()
+    if cors in {"", "*"}:
+        _log.warning(
+            "P0 security: FINQUANTA_CORS_ORIGINS is wildcard in prod; restrict before exposure"
+        )
+    try:
+        status = get_auth_security_status()
+        if status.get("default_admin_password"):
+            _log.warning(
+                "P0 security: default admin/admin123 still active; change before API exposure"
+            )
+        for finding in status.get("findings", []) or []:
+            if finding.get("level") == "error":
+                _log.warning("P0 security: %s", finding.get("message", finding.get("code")))
+    except Exception as exc:
+        _log.warning("P0 security: auth security check skipped at startup: %s", exc)
 
 
 def _autostart_daemon_if_enabled():
@@ -396,11 +420,18 @@ def api_ops_health(authorization: str | None = Header(default=None), limit: int 
 @app.get("/api/scan/latest", response_model=ApiResponse)
 def api_scan_latest(authorization: str | None = Header(default=None)):
     require_user(authorization)
-    row = repo.fetchone("SELECT value, updated_at FROM kv_store WHERE key=?", ("last_scan_results",))
-    if not row:
-        return ApiResponse(data={"items": [], "updated_at": "", "count": 0})
-    items = _decode_json_field(row[0], [])
-    return ApiResponse(data={"items": items, "updated_at": row[1] or "", "count": len(items)})
+    from desktop.scan_store import get_scan_results, get_scan_results_meta, resolve_scan_results
+
+    items, meta, warning = resolve_scan_results()
+    return ApiResponse(
+        data={
+            "items": items,
+            "updated_at": meta.get("written_at", ""),
+            "count": len(items),
+            "meta": meta,
+            "warning": warning or "",
+        }
+    )
 
 
 @app.post("/api/scan/run", response_model=ApiResponse)

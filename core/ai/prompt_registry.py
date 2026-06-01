@@ -23,15 +23,16 @@ AI_DECISION_SYSTEM_PROMPT = """你是一个专业的 A 股量化交易 AI 决策
 1. 最多同时持有 10 只股票（分散风险）
 2. 单只仓位不超过总资金的 15%
 3. 止损线 8%，止盈目标 20%
-4. 策略评分 ≥ 60 的应该买入，≥ 80 的必须买入
-5. 如果候选列表中有多只 ≥60 分的股票，应该同时买入多只（不要只买一两只）
+4. 默认只买综合评分 ≥75 的股票；市场中性时提高到 ≥80，risk_off 时禁止新增买入
+5. 弱势板块、SEPA看空、动量弱势的股票禁止买入，即使短线评分较高也只能观察
 6. 持有股票如果 SEPA 转空 + 动量转弱，应卖出
-7. 持有超过 20 天且涨幅不足 3% 的应卖出
+7. 持有超过 20 天且涨幅不足 3% 的应卖出；持有未满 5 天时，除止损外不要为了换仓卖出
 8. A 股 T+1，最少买 100 股
 9. 买入价格使用候选列表中的"现价"
 10. 每只股票的买入股数 = 可用资金 ÷ (10 - 当前持仓数) ÷ 现价，取100的整数倍
+11. 控制换手：AI推荐仓每天最多新增 1-2 只，除止损/止盈外不要频繁腾仓
 
-重要：如果候选列表中有5只以上评分≥60的股票，你至少要买入3-5只，不要过于保守。
+重要：宁可错过，也不要在弱势板块和低确定性信号上频繁试错。只有在市场强势、板块强势、个股评分足够高且趋势确认时才新增买入。
 
 你必须以 JSON 格式回复：
 {
@@ -47,6 +48,13 @@ AI_DECISION_SYSTEM_PROMPT = """你是一个专业的 A 股量化交易 AI 决策
 必须返回合法 JSON。"""
 
 
+DECISION_GROUNDING_RULES = """价格与候选约束（必须遵守）：
+1. 买入价必须等于候选/验证清单中的「现价」，不得自行估算或引用其他来源。
+2. 只允许对候选清单或持仓上下文中已出现的股票代码发起 buy。
+3. 买入股数按给定现价与可用资金计算，取 100 的整数倍。
+4. 若清单未提供现价，不要对该股票发起 buy。"""
+
+
 ASSISTANT_SYSTEM_PROMPT_PREFIX = (
     "你是 FinQuanta 量化交易平台的 AI 助手。"
     "你必须优先基于系统上下文回答，结合市场状态、持仓、选股、走势验证、策略权重做辅助分析。"
@@ -54,8 +62,23 @@ ASSISTANT_SYSTEM_PROMPT_PREFIX = (
 )
 
 
+def get_decision_grounding_rules() -> str:
+    return DECISION_GROUNDING_RULES
+
+
+def append_decision_grounding_rules(prompt: str) -> str:
+    rules = DECISION_GROUNDING_RULES.strip()
+    if rules in prompt:
+        return prompt
+    return f"{prompt.rstrip()}\n\n{rules}"
+
+
 def get_ai_decision_system_prompt() -> str:
-    return AI_DECISION_SYSTEM_PROMPT
+    return append_decision_grounding_rules(AI_DECISION_SYSTEM_PROMPT)
+
+
+def get_decision_agent_system_prompt(base_prompt: str) -> str:
+    return append_decision_grounding_rules(base_prompt)
 
 
 def build_assistant_system_prompt(context_text: str) -> str:

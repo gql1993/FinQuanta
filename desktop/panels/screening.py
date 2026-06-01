@@ -694,10 +694,24 @@ class ScreeningPanel(QWidget):
             self.status_label.setText(
                 f"共 {raw_count} 只候选，重复命中 {self._last_overlap_rows} 只{tab_hint}"
             )
+        elif filtered_count == 0 and raw_count > 0:
+            self.status_label.setText(
+                f"筛选后 0/{raw_count} 只（当前筛选过严，可点「重置筛选」）{tab_hint}"
+            )
         else:
             self.status_label.setText(
                 f"筛选后 {filtered_count}/{raw_count} 只，重复命中 {self._last_overlap_rows} 只{tab_hint}"
             )
+
+    def apply_single_scan_filters(self):
+        """单策略扫描无共振候选；自动关闭「仅共振」避免空表。"""
+        if self.scan_filter_resonance.currentText() != "仅共振":
+            return
+        self._suspend_filter_persist = True
+        self.scan_filter_resonance.setCurrentIndex(0)
+        self._suspend_filter_persist = False
+        self._save_scan_filter_state()
+        self._apply_aggregate_filters()
 
     def populate_results(self, candidates: list[dict], per_strategy: dict[str, list[dict]] | None = None):
         self._all_aggregate_candidates = list(candidates or [])

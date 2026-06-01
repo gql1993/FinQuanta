@@ -7,7 +7,8 @@ import json
 import logging
 import urllib.request
 import numpy as np
-from datetime import datetime
+import re
+from datetime import date, datetime
 
 _log = logging.getLogger("ai_trader")
 
@@ -20,6 +21,19 @@ from core.ai.context_builder import (
 )
 from desktop.ai_portfolio import get_state, buy, sell, get_log
 from desktop.data_access import RepoCompatConnection
+
+_AI_GUARD_MODES = {"auto", "manual", "full_auto", "arena_hot_llm"}
+_BUY_MIN_SCORE_BY_MARKET = {
+    "strong_trend": 70,
+    "rotation": 75,
+    "neutral": 80,
+    "risk_off": 10_000,
+}
+_MAX_DAILY_BUYS = 1
+_MAX_DAILY_TRADES = 4
+_MIN_HOLD_DAYS_FOR_AI_ROTATION_SELL = 5
+_MIN_STOP_DISTANCE_PCT = 0.08
+_WEAK_BOARD_5D_THRESHOLD = 0.0
 
 
 def _get_api_config() -> dict:
@@ -306,8 +320,11 @@ def run_ai_decision(board: str = "人工智能", mode: str = "auto", extra_promp
     )
 
 
-def _calc_atr_stop(code: str, entry_price: float, multiplier: float = 2.0) -> float:
-    """基于 ATR（20日平均真实波幅）计算动态止损价。"""
+def _calc_atr_stop(code: str, entry_price: float, multiplier: float = 2.5) -> float:
+    """基于 ATR（20日平均真实波幅）计算动态止损价。
+
+    至少留出 _MIN_STOP_DISTANCE_PCT 的波动空间，避免 ATR 过小时止损贴脸。
+    """
     conn = RepoCompatConnection()
     cur = conn.execute(
         "SELECT high, low, close FROM daily_kline WHERE code=? ORDER BY date DESC LIMIT 21",
@@ -316,8 +333,10 @@ def _calc_atr_stop(code: str, entry_price: float, multiplier: float = 2.0) -> fl
     rows = cur.fetchall()
     conn.close()
 
+    min_stop_price = entry_price * (1 - _MIN_STOP_DISTANCE_PCT)
+
     if len(rows) < 5:
-        return round(entry_price * 0.92, 2)
+        return round(min_stop_price, 2)
 
     rows = rows[::-1]
     tr_list = []
@@ -327,7 +346,8 @@ def _calc_atr_stop(code: str, entry_price: float, multiplier: float = 2.0) -> fl
         tr_list.append(tr)
 
     atr = float(np.mean(tr_list[-20:])) if len(tr_list) >= 20 else float(np.mean(tr_list))
-    stop = entry_price - multiplier * atr
+    atr_stop = entry_price - multiplier * atr
+    stop = min(atr_stop, min_stop_price)
     return round(max(stop, entry_price * 0.85), 2)
 
 
@@ -407,11 +427,183 @@ def _get_real_price(code: str) -> float:
     return 0.0
 
 
+def _load_kv_json(key: str, default=None):
+    try:
+        conn = RepoCompatConnection()
+        row = conn.execute("SELECT value FROM kv_store WHERE key=?", (key,)).fetchone()
+        conn.close()
+        if not row or row[0] is None:
+            return default
+        return json.loads(row[0])
+    except Exception:
+        return default
+
+
+def _extract_score_from_text(text: str) -> int:
+    m = re.search(r"(?:综合|评分)\s*(\d{2,3})\s*分?", str(text or ""))
+    return int(m.group(1)) if m else 0
+
+
+def _lookup_candidate_meta(code: str) -> dict:
+    meta = {"score": 0, "board": "", "strategy_views": "", "momentum_view": "", "sepa_view": ""}
+
+    try:
+        from desktop.scan_store import resolve_scan_results
+
+        scan_rows, _, _ = resolve_scan_results()
+    except Exception:
+        scan_rows = []
+
+    for item in scan_rows:
+        if str(item.get("代码", "") or "") == code:
+            try:
+                meta["score"] = int(item.get("评分", 0) or 0)
+            except Exception:
+                meta["score"] = 0
+            meta["board"] = str(item.get("板块", "") or "")
+            break
+
+    try:
+        conn = RepoCompatConnection()
+        if not meta["board"]:
+            row = conn.execute("SELECT board FROM board_stocks WHERE code=? LIMIT 1", (code,)).fetchone()
+            if row:
+                meta["board"] = str(row[0] or "")
+        rows = conn.execute(
+            "SELECT close, high, low, volume FROM daily_kline WHERE code=? ORDER BY date DESC LIMIT 260",
+            (code,),
+        ).fetchall()
+        conn.close()
+        if len(rows) >= 50:
+            rows = list(reversed(rows))
+            closes = np.array([row[0] for row in rows])
+            highs = np.array([row[1] for row in rows])
+            lows = np.array([row[2] for row in rows])
+            volumes = np.array([row[3] for row in rows])
+            scores = _compute_strategy_scores(code, closes, highs, lows, volumes)
+            meta["score"] = max(meta["score"], int(scores.get("score", 0) or 0))
+            strategies = scores.get("strategies", {})
+            meta["strategy_views"] = " ".join(
+                f"{name}:{strategy.get('view', '')}"
+                for name, strategy in strategies.items()
+                if strategy.get("score", 0) > 0
+            )
+            meta["sepa_view"] = strategies.get("SEPA趋势", {}).get("view", "")
+            meta["momentum_view"] = strategies.get("动量", {}).get("view", "")
+    except Exception:
+        pass
+
+    return meta
+
+
+def _daily_trade_counts(mode: str) -> tuple[int, int]:
+    today_prefix = date.today().isoformat()
+    try:
+        conn = RepoCompatConnection()
+        rows = conn.execute(
+            """
+            SELECT action, COUNT(1)
+            FROM ai_trade_log
+            WHERE mode=? AND substr(timestamp, 1, 10)=?
+            GROUP BY action
+            """,
+            (mode, today_prefix),
+        ).fetchall()
+        conn.close()
+    except Exception:
+        return 0, 0
+    counts = {str(action or "").upper(): int(count or 0) for action, count in rows}
+    buys = counts.get("BUY", 0)
+    trades = buys + counts.get("SELL", 0)
+    return buys, trades
+
+
+def _check_ai_buy_guard(mode: str, decision: dict) -> str | None:
+    if mode not in _AI_GUARD_MODES:
+        return None
+
+    code = str(decision.get("code", "") or "")
+    reason = str(decision.get("reason", "") or "")
+    meta = _lookup_candidate_meta(code)
+    score = int(decision.get("score", 0) or 0) or _extract_score_from_text(reason) or meta["score"]
+
+    try:
+        from desktop.market_state import get_market_state_snapshot
+        market = get_market_state_snapshot() or {}
+    except Exception:
+        market = {}
+
+    market_state = str(market.get("state", "neutral") or "neutral")
+    min_score = _BUY_MIN_SCORE_BY_MARKET.get(market_state, 80)
+    weak_boards = set(market.get("sector_bottom3", []) or [])
+    rotation = _load_kv_json("sector_rotation", {}) or {}
+    weak_boards.update(rotation.get("bottom3", []) or [])
+    board = meta.get("board", "")
+
+    buys_today, trades_today = _daily_trade_counts(mode)
+    if trades_today >= _MAX_DAILY_TRADES:
+        return f"今日交易已达上限{_MAX_DAILY_TRADES}笔，禁止继续高换手"
+    if buys_today >= _MAX_DAILY_BUYS:
+        return f"今日买入已达上限{_MAX_DAILY_BUYS}只，禁止继续扩仓"
+    if market_state == "risk_off":
+        return f"市场状态为 risk_off（{market.get('reason', '')}），只允许卖出/观察"
+    if board and board in weak_boards:
+        return f"命中弱势板块[{board}]，禁止买入"
+    if score < min_score:
+        return f"综合评分{score}低于当前市场门槛{min_score}"
+    if meta.get("sepa_view") == "看空":
+        return "SEPA趋势看空，禁止买入"
+    if meta.get("momentum_view") == "弱势":
+        return "动量弱势，禁止买入"
+    if board:
+        try:
+            from desktop.arena.loss_analysis import get_board_return_window
+
+            board_5d = get_board_return_window(board)
+            if board_5d is not None and board_5d <= _WEAK_BOARD_5D_THRESHOLD:
+                return f"板块[{board}]近5日{board_5d:+.1f}%未上涨，禁止追买"
+        except Exception:
+            pass
+    return None
+
+
+def _check_ai_sell_guard(mode: str, code: str, price: float) -> str | None:
+    if mode not in _AI_GUARD_MODES:
+        return None
+    try:
+        conn = RepoCompatConnection()
+        row = conn.execute(
+            "SELECT entry_date, entry_price, stop_loss FROM ai_positions WHERE mode=? AND code=? AND status='open'",
+            (mode, code),
+        ).fetchone()
+        conn.close()
+        if not row:
+            return None
+        entry_date, entry_price, stop_loss = row
+        hold_days = (date.today() - date.fromisoformat(str(entry_date))).days
+        pnl_pct = (price - float(entry_price)) / float(entry_price) * 100 if entry_price else 0
+        if price <= float(stop_loss or 0) or pnl_pct <= -5:
+            return None
+        if hold_days < _MIN_HOLD_DAYS_FOR_AI_ROTATION_SELL:
+            return f"持仓仅{hold_days}天，未触发止损前禁止为换仓卖出"
+    except Exception:
+        return None
+    return None
+
+
 def execute_ai_decisions(decisions: list[dict], mode: str = "auto") -> list[str]:
     """执行 AI 的买卖决策。mode: 'auto'=自主仓, 'manual'=推荐仓
     注意：买入/卖出价格始终使用真实市场价格，忽略 LLM 建议价。
     """
     results = []
+    from desktop.ai_portfolio import get_state
+
+    holding_codes = {
+        str(p.get("code", "") or "")
+        for p in get_state(mode).get("positions", [])
+        if p.get("code")
+    }
+
     for d in decisions:
         action = d.get("action", "").lower()
         code = d.get("code", "")
@@ -422,6 +614,13 @@ def execute_ai_decisions(decisions: list[dict], mode: str = "auto") -> list[str]
             shares = int(d.get("shares", 0))
             if not code or not shares:
                 results.append(f"跳过无效买入: {d}")
+                continue
+            if code in holding_codes:
+                results.append(f"已持有 {code}，跳过重复买入")
+                continue
+            block_reason = _check_ai_buy_guard(mode, d)
+            if block_reason:
+                results.append(f"风控拦截买入 {code}: {block_reason}")
                 continue
             real_price = _get_real_price(code)
             ai_price = float(d.get("price", 0))
@@ -461,10 +660,15 @@ def execute_ai_decisions(decisions: list[dict], mode: str = "auto") -> list[str]
             stop_loss = _calc_atr_stop(code, real_price)
             msg = buy(mode, code, name, real_price, shares, stop_loss, f"AI决策: {reason}")
             results.append(msg)
+            holding_codes.add(code)
 
         elif action == "sell":
             price = _get_real_price(code)
             if price > 0:
+                block_reason = _check_ai_sell_guard(mode, code, price)
+                if block_reason:
+                    results.append(f"风控拦截卖出 {code}: {block_reason}")
+                    continue
                 msg = sell(mode, code, price, f"AI决策: {reason}")
                 results.append(msg)
             else:

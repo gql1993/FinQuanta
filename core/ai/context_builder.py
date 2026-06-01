@@ -12,6 +12,7 @@ The public API is intentionally split into:
 from __future__ import annotations
 
 import json
+import os
 from typing import Any
 
 import numpy as np
@@ -337,55 +338,259 @@ def build_portfolio_context(mode: str = "auto") -> dict[str, Any]:
     }
 
 
-def build_decision_history_context(limit: int = 5) -> dict[str, Any]:
-    """Return structured calibrated AI decision history feedback."""
+def _decision_history_limit(default: int = 5) -> int:
+    raw = os.environ.get("FINQUANTA_DECISION_HISTORY_LIMIT", str(default))
+    try:
+        return max(1, int(raw))
+    except (TypeError, ValueError):
+        return default
+
+
+def parse_board_tokens(board: str | None) -> list[str]:
+    return [part.strip() for part in str(board or "").split(",") if part.strip()]
+
+
+def _summarize_actual_payload(results: dict | None) -> dict[str, Any]:
+    if not isinstance(results, dict):
+        return {
+            "executed_count": 0,
+            "executed_correct": 0,
+            "correct_ratio": 0.0,
+            "avg_pnl": 0.0,
+            "blocked_count": 0,
+            "blocked_avoided_losses": 0,
+            "blocked_missed_gains": 0,
+            "routed_blocked_count": 0,
+            "routed_avoided_losses": 0,
+            "routed_missed_gains": 0,
+        }
+
+    summary = results.get("summary", {}) or {}
+    executed = results.get("executed_buys", []) or []
+    pnls = []
+    for item in executed:
+        try:
+            pnls.append(float(item.get("pnl_pct", 0) or 0))
+        except (TypeError, ValueError):
+            continue
+
+    executed_count = int(summary.get("executed_count", len(executed)) or 0)
+    executed_correct = int(
+        summary.get(
+            "executed_correct",
+            sum(1 for item in executed if item.get("correct")),
+        )
+        or 0
+    )
+    avg_pnl = round(sum(pnls) / len(pnls), 2) if pnls else 0.0
+    correct_ratio = executed_correct / executed_count if executed_count else 0.0
+
+    return {
+        "executed_count": executed_count,
+        "executed_correct": executed_correct,
+        "correct_ratio": correct_ratio,
+        "avg_pnl": avg_pnl,
+        "blocked_count": int(summary.get("blocked_count", 0) or 0),
+        "blocked_avoided_losses": int(summary.get("blocked_avoided_losses", 0) or 0),
+        "blocked_missed_gains": int(summary.get("blocked_missed_gains", 0) or 0),
+        "routed_blocked_count": int(summary.get("routed_blocked_count", 0) or 0),
+        "routed_avoided_losses": int(summary.get("routed_avoided_losses", 0) or 0),
+        "routed_missed_gains": int(summary.get("routed_missed_gains", 0) or 0),
+    }
+
+
+def _decision_boards(decisions: list[dict] | None) -> set[str]:
+    boards: set[str] = set()
+    for decision in decisions or []:
+        if not isinstance(decision, dict):
+            continue
+        board = str(decision.get("board", "") or "").strip()
+        if board:
+            boards.add(board)
+    return boards
+
+
+def _matches_board_filter(decisions: list[dict] | None, boards: list[str] | None) -> bool:
+    if not boards:
+        return True
+    row_boards = _decision_boards(decisions)
+    if not row_boards:
+        return True
+    return bool(row_boards.intersection(set(boards)))
+
+
+def _parse_calibrated_memory_row(row: tuple) -> dict[str, Any] | None:
+    (
+        ts,
+        mode,
+        decisions_json,
+        results_json,
+        verification_json,
+        guardrail_json,
+        market_regime,
+        analysis,
+    ) = row
+    try:
+        decisions = json.loads(decisions_json) if decisions_json else []
+        results = json.loads(results_json) if results_json else {}
+        verification = json.loads(verification_json) if verification_json else {}
+        guardrails = json.loads(guardrail_json) if guardrail_json else {}
+    except Exception:
+        return None
+
+    if not isinstance(decisions, list):
+        decisions = []
+    stats = _summarize_actual_payload(results if isinstance(results, dict) else {})
+    return {
+        "timestamp": ts or "",
+        "mode": mode or "",
+        "decisions": decisions,
+        "stats": stats,
+        "verification": verification if isinstance(verification, dict) else {},
+        "guardrails": guardrails if isinstance(guardrails, dict) else {},
+        "market_regime": str(market_regime or ""),
+        "analysis": str(analysis or ""),
+        "decision_count": len(decisions),
+    }
+
+
+def _load_calibrated_memory_items(
+    limit: int,
+    boards: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    fetch_limit = max(limit, limit * 4) if boards else limit
     try:
         conn = RepoCompatConnection()
         rows = conn.execute(
-            "SELECT timestamp, decisions, actual_results, verification_summary, guardrail_summary "
+            "SELECT timestamp, mode, decisions, actual_results, verification_summary, "
+            "guardrail_summary, market_regime, analysis "
             "FROM ai_decision_memory WHERE calibrated=1 "
             "ORDER BY timestamp DESC LIMIT ?",
-            (limit,),
+            (fetch_limit,),
         ).fetchall()
         conn.close()
-        if not rows:
-            return {"items": [], "summary_text": ""}
-
-        items = []
-        for ts, decisions_json, results_json, verification_json, guardrail_json in rows:
-            try:
-                decisions = json.loads(decisions_json) if decisions_json else []
-                results = json.loads(results_json) if results_json else {}
-                verification = json.loads(verification_json) if verification_json else {}
-                guardrails = json.loads(guardrail_json) if guardrail_json else {}
-                pnl = results.get("avg_pnl", 0)
-                correct = results.get("correct_ratio", 0)
-                count = len(decisions) if isinstance(decisions, list) else 0
-                items.append(
-                    {
-                        "timestamp": ts,
-                        "decision_count": count,
-                        "correct_ratio": correct,
-                        "avg_pnl": pnl,
-                        "verified_count": verification.get("verified_count", 0),
-                        "blocked_buy_count": guardrails.get("blocked_buy_count", 0),
-                    }
-                )
-            except Exception:
-                pass
-        return {
-            "items": items,
-            "summary_text": (
-                "请参考历史表现，避免重复犯错，强化有效模式。" if items else ""
-            ),
-        }
     except Exception:
-        return {"items": [], "summary_text": ""}
+        return []
+
+    items: list[dict[str, Any]] = []
+    for row in rows:
+        item = _parse_calibrated_memory_row(row)
+        if not item:
+            continue
+        if not _matches_board_filter(item.get("decisions"), boards):
+            continue
+        items.append(item)
+        if len(items) >= limit:
+            break
+    return items
+
+
+def _format_reflection_line(item: dict[str, Any]) -> str:
+    ts = str(item.get("timestamp", "") or "")[:10] or "未知日期"
+    stats = item.get("stats", {}) or {}
+    parts = [ts]
+
+    executed_count = int(stats.get("executed_count", 0) or 0)
+    if executed_count > 0:
+        parts.append(
+            f"执行{executed_count}笔买入，准确率{float(stats.get('correct_ratio', 0) or 0):.0%}，"
+            f"均收益{float(stats.get('avg_pnl', 0) or 0):+.1f}%"
+        )
+
+    blocked_avoided = int(stats.get("blocked_avoided_losses", 0) or 0)
+    blocked_missed = int(stats.get("blocked_missed_gains", 0) or 0)
+    routed_avoided = int(stats.get("routed_avoided_losses", 0) or 0)
+    routed_missed = int(stats.get("routed_missed_gains", 0) or 0)
+    if blocked_avoided:
+        parts.append(f"守门拦截避免{blocked_avoided}笔亏损")
+    if blocked_missed:
+        parts.append(f"守门错过{blocked_missed}笔机会")
+    if routed_avoided:
+        parts.append(f"分流策略避免{routed_avoided}笔亏损")
+    if routed_missed:
+        parts.append(f"分流策略错过{routed_missed}笔机会")
+
+    regime = str(item.get("market_regime", "") or "").strip()
+    if regime:
+        parts.append(f"环境:{regime[:24]}")
+
+    analysis = str(item.get("analysis", "") or "").strip()
+    if analysis and executed_count == 0 and not blocked_avoided and not routed_avoided:
+        parts.append(f"结论:{analysis[:40]}")
+
+    return "；".join(parts)
+
+
+def build_decision_history_context(limit: int | None = None) -> dict[str, Any]:
+    """Return structured calibrated AI decision history feedback."""
+    limit = _decision_history_limit() if limit is None else max(1, int(limit))
+    items = []
+    for item in _load_calibrated_memory_items(limit):
+        stats = item.get("stats", {}) or {}
+        guardrails = item.get("guardrails", {}) or {}
+        verification = item.get("verification", {}) or {}
+        items.append(
+            {
+                "timestamp": item.get("timestamp", ""),
+                "decision_count": item.get("decision_count", 0),
+                "correct_ratio": float(stats.get("correct_ratio", 0) or 0),
+                "avg_pnl": float(stats.get("avg_pnl", 0) or 0),
+                "verified_count": verification.get("verified_count", 0),
+                "blocked_buy_count": guardrails.get("blocked_buy_count", 0),
+                "executed_count": stats.get("executed_count", 0),
+            }
+        )
+    return {
+        "items": items,
+        "summary_text": (
+            "请参考历史表现，避免重复犯错，强化有效模式。" if items else ""
+        ),
+    }
+
+
+def build_decision_reflection_context(
+    boards: list[str] | None = None,
+    limit: int | None = None,
+) -> dict[str, Any]:
+    """Return structured reflection lines from calibrated decision memory."""
+    limit = _decision_history_limit() if limit is None else max(1, int(limit))
+    items = _load_calibrated_memory_items(limit, boards=boards)
+    reflection_lines = [_format_reflection_line(item) for item in items if _format_reflection_line(item)]
+    board_label = ", ".join(boards[:3]) if boards else ""
+    summary_text = (
+        f"请参考与当前板块({board_label})相关的历史经验，避免重复犯错。"
+        if board_label and reflection_lines
+        else "请参考历史决策经验，避免重复犯错，强化有效模式。"
+        if reflection_lines
+        else ""
+    )
+    return {
+        "boards": boards or [],
+        "items": items,
+        "reflection_lines": reflection_lines,
+        "summary_text": summary_text,
+    }
+
+
+def build_decision_memory_context(
+    boards: list[str] | None = None,
+    limit: int | None = None,
+) -> dict[str, Any]:
+    """Combined structured history + reflection payload for decision prompts."""
+    limit = _decision_history_limit() if limit is None else max(1, int(limit))
+    history = build_decision_history_context(limit=limit)
+    reflection = build_decision_reflection_context(boards=boards, limit=limit)
+    return {
+        "history": history,
+        "reflection": reflection,
+    }
 
 
 def build_scan_context(limit: int = 10) -> dict[str, Any]:
     """Return structured latest scan context."""
-    last_scan = get_kv_json("last_scan_results", []) or []
+    from desktop.scan_store import format_scan_meta_summary, resolve_scan_results
+
+    last_scan, meta, warning = resolve_scan_results()
     top_scan = []
     for item in last_scan[:limit]:
         top_scan.append(
@@ -397,7 +602,12 @@ def build_scan_context(limit: int = 10) -> dict[str, Any]:
                 "advice": item.get("建议买入", ""),
             }
         )
-    return {"items": top_scan}
+    return {
+        "items": top_scan,
+        "meta": meta,
+        "warning": warning,
+        "summary": format_scan_meta_summary(meta, count=len(last_scan), warning=warning),
+    }
 
 
 def build_ops_context(
@@ -508,34 +718,37 @@ def build_candidates_context(board: str = "人工智能", limit: int = 30) -> di
         pass
 
     scan_candidates = []
+    scan_meta: dict[str, Any] = {}
+    scan_warning: str | None = None
     try:
-        row_scan = conn.execute(
-            "SELECT value, updated_at FROM kv_store WHERE key='last_scan_results'"
-        ).fetchone()
-        if row_scan:
-            scan_items = json.loads(row_scan[0])
-            for item in scan_items[:50]:
-                code = item.get("代码", "")
-                if not code:
-                    continue
-                score = int(item.get("评分", 0))
-                signals = []
-                if item.get("VCP") == "✓":
-                    signals.append("VCP收缩")
-                if item.get("突破") == "✓":
-                    signals.append("突破")
-                if item.get("建议买入", ""):
-                    signals.append(item["建议买入"])
-                scan_candidates.append(
-                    {
-                        "code": code,
-                        "name": item.get("名称", names.get(code, "")),
-                        "price": float(item.get("价格", "0").replace(",", "") or 0),
-                        "pct": 0,
-                        "scores": {"score": score, "signals": signals, "strategies": {}},
-                        "board": item.get("板块", "雷达精选"),
-                    }
-                )
+        from desktop.scan_store import resolve_scan_results
+
+        scan_items, scan_meta, scan_warning = resolve_scan_results()
+        for item in scan_items[:50]:
+            code = item.get("代码", "")
+            if not code:
+                continue
+            try:
+                score = int(item.get("评分", 0) or 0)
+            except (TypeError, ValueError):
+                score = 0
+            signals = []
+            if item.get("VCP") == "✓":
+                signals.append("VCP收缩")
+            if item.get("突破") == "✓":
+                signals.append("突破")
+            if item.get("建议买入", ""):
+                signals.append(item["建议买入"])
+            scan_candidates.append(
+                {
+                    "code": code,
+                    "name": item.get("名称", names.get(code, "")),
+                    "price": float(str(item.get("价格", "0")).replace(",", "") or 0),
+                    "pct": 0,
+                    "scores": {"score": score, "signals": signals, "strategies": {}},
+                    "board": item.get("板块", "雷达精选"),
+                }
+            )
     except Exception:
         pass
 
@@ -630,6 +843,9 @@ def build_candidates_context(board: str = "人工智能", limit: int = 30) -> di
     if scan_candidates:
         board_summary += f", 雷达精选({len(scan_candidates)}只)"
 
+    warning_parts = []
+    if scan_warning:
+        warning_parts.append(scan_warning)
     return {
         "boards": boards,
         "board_summary": board_summary,
@@ -638,8 +854,9 @@ def build_candidates_context(board: str = "人工智能", limit: int = 30) -> di
             1 for item in candidates if item["scores"]["score"] >= 60
         ),
         "scan_candidate_count": len(scan_candidates),
+        "scan_meta": scan_meta,
         "items": visible_items,
-        "warning": "",
+        "warning": "; ".join(warning_parts),
     }
 
 
@@ -717,24 +934,71 @@ def build_candidates_context_text(board: str = "人工智能", limit: int = 30) 
             f"\n📌 {context['strong_candidate_count']} 只达到买入标准，可精选买入。"
         )
 
+    lines.append("\n【价格约束】以上现价为系统快照，决策中买入价必须与此一致。")
     return "\n".join(lines)
 
 
-def build_decision_history_context_text(limit: int = 5) -> str:
+def build_decision_history_context_text(limit: int | None = None) -> str:
     """Render calibrated AI decision history feedback."""
-    context = build_decision_history_context(limit)
+    limit = _decision_history_limit() if limit is None else max(1, int(limit))
+    context = build_decision_history_context(limit=limit)
     items = context.get("items", [])
     if not items:
         return ""
-    lines = ["== 历史决策回顾（近5次已校准） =="]
+    lines = [f"== 历史决策回顾（近{len(items)}次已校准）=="]
     for item in items:
+        executed_count = int(item.get("executed_count", 0) or 0)
+        extra = f", 执行买入{executed_count}笔" if executed_count else ""
         lines.append(
-            f"  {item['timestamp'][:10]}: {item['decision_count']}条决策, "
+            f"  {item['timestamp'][:10]}: {item['decision_count']}条决策{extra}, "
             f"准确率{item['correct_ratio']:.0%}, 均收益{item['avg_pnl']:+.1f}%"
         )
     if context.get("summary_text"):
         lines.append(context["summary_text"])
     return "\n".join(lines)
+
+
+def build_decision_reflection_context_text(
+    boards: list[str] | None = None,
+    limit: int | None = None,
+) -> str:
+    """Render calibrated reflection lines for decision prompts."""
+    context = build_decision_reflection_context(boards=boards, limit=limit)
+    lines_payload = context.get("reflection_lines", [])
+    if not lines_payload:
+        return ""
+    board_label = ", ".join(context.get("boards") or [])[:40]
+    title = (
+        f"== 历史决策反思（板块: {board_label}）=="
+        if board_label
+        else "== 历史决策反思（已校准）=="
+    )
+    lines = [title]
+    for line in lines_payload:
+        lines.append(f"  {line}")
+    if context.get("summary_text"):
+        lines.append(context["summary_text"])
+    return "\n".join(lines)
+
+
+def build_decision_memory_context_text(
+    boards: list[str] | None = None,
+    limit: int | None = None,
+) -> str:
+    """Render reflection-first decision memory context for prompts."""
+    reflection = build_decision_reflection_context_text(boards=boards, limit=limit)
+    if reflection:
+        learning_hint = build_learning_feedback_context_text()
+        if learning_hint:
+            return f"{reflection}\n\n{learning_hint}"
+        return reflection
+    history = build_decision_history_context_text(limit=limit)
+    if not history:
+        return build_learning_feedback_context_text()
+    learning_hint = build_learning_feedback_context_text()
+    if learning_hint:
+        return f"{history}\n\n{learning_hint}"
+    return history
 
 
 def build_rotation_context_text() -> str:

@@ -1,0 +1,28 @@
+{
+  "experiment": "paper_v1_mvp_hs300_monthly_csv_snapshot",
+  "mode": "demo-synthetic",
+  "data_mode": "synthetic_research_data",
+  "start_date": "2018-01-01",
+  "end_date": "2025-12-31",
+  "rows": {
+    "returns": 2088,
+    "benchmark": 2088,
+    "metadata": 100
+  },
+  "symbols": 100,
+  "files": {
+    "returns": {
+      "path": "research_paper\\data_snapshots\\paper_v1_hs300_monthly\\returns.csv",
+      "sha256": "710c3505f2ad65783bacf3938e87c771b005fa02b99101fbc86e3efa0f080887"
+    },
+    "benchmark": {
+      "path": "research_paper\\data_snapshots\\paper_v1_hs300_monthly\\benchmark.csv",
+      "sha256": "e647fd2c10d264d26996be9f9b94af8044aeac6f8b8175d4c96612d095ea1947"
+    },
+    "metadata": {
+      "path": "research_paper\\data_snapshots\\paper_v1_hs300_monthly\\metadata.csv",
+      "sha256": "ea123cf39567669725bc3cfbd75aeaddeb2c37f72bd678a2e286b8f0814931cc"
+    }
+  },
+  "note": "Demo synthetic snapshot. Replace mode with an approved read-only data export for paper evidence."
+}

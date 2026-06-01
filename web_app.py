@@ -251,12 +251,11 @@ elif page == "📡 选股雷达":
         updated_at = data.get("updated_at", "")
     except Exception as e:
         _guard_platform_mode("scan latest", e)
-        conn = _db()
-        r = conn.execute("SELECT value, updated_at FROM kv_store WHERE key='last_scan_results'").fetchone()
-        conn.close()
-        if r:
-            candidates = json.loads(r[0])
-            updated_at = r[1] or ""
+        from desktop.scan_store import get_scan_results_meta, resolve_scan_results
+
+        rows, meta, _ = resolve_scan_results()
+        candidates = rows
+        updated_at = meta.get("written_at", "")
 
     if candidates:
         st.caption(f"最近扫描时间: {updated_at[:19] if updated_at else '-'} | 共 {len(candidates)} 只候选")
@@ -336,19 +335,19 @@ elif page == "🤖 AI仓":
                 "仓位": label,
                 "总资产": f"¥{c.get('equity', 0):,.0f}",
                 "收益率": f"{c.get('return_pct', 0):+.2f}%",
-                "已平仓胜率": f"{c.get('win_rate', 0):.1f}%",
+                "平仓胜率": f"{c.get('win_rate', 0):.1f}%",
                 "浮盈占比": f"{c.get('open_win_rate', 0):.1f}%",
                 "交易数": c.get("total_trades", 0),
-                "总盈亏": f"¥{c.get('total_pnl', 0):+,.0f}",
+                "盈亏": f"¥{c.get('total_pnl', 0):+,.0f}",
             })
         rows_data.insert(0, {
             "仓位": "💼手动仓",
             "总资产": f"¥{manual_summary.get('equity', 0):,.0f}",
             "收益率": f"{manual_summary.get('return_pct', 0):+.2f}%",
-            "已平仓胜率": "-",
-            "浮盈占比": "-",
+            "平仓胜率": "不适用",
+            "浮盈占比": "不适用",
             "交易数": manual_summary.get("total_trades", manual_summary.get("positions", 0)),
-            "总盈亏": f"¥{manual_summary.get('total_pnl', 0):+,.0f}",
+            "盈亏": f"¥{manual_summary.get('total_pnl', 0):+,.0f}",
         })
         st.dataframe(pd.DataFrame(rows_data), use_container_width=True)
 

@@ -4,7 +4,8 @@ cd /d "%~dp0"
 
 set TASK_NAME=FinQuantaOpenClawGateway
 set SCRIPT_PATH=%~dp0start_openclaw_service.bat
-set TASK_COMMAND=%ComSpec% /c ""%SCRIPT_PATH%""
+set LAUNCHER_PATH=%~dp0hidden_task_launcher.vbs
+set TASK_COMMAND=%SystemRoot%\System32\wscript.exe //B "%LAUNCHER_PATH%" "%SCRIPT_PATH%"
 set MODE=user
 set START_NOW=0
 

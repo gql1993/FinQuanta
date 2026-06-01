@@ -20,6 +20,10 @@ from desktop.data_access import get_repo
 
 _log = logging.getLogger("auto_sell")
 
+# "manual" is the legacy storage mode for the AI recommendation portfolio.
+# Keep it in the sell-risk loop so older AI positions are not orphaned.
+_SELL_MONITORED_MODES = ("full_auto", "auto", "manual", "custom", "quantum")
+
 
 def _get_price(code: str, repo) -> float:
     """获取最新价格（实时→日K兜底）。"""
@@ -62,6 +66,16 @@ def _calc_atr(code: str, repo, period: int = 20) -> float:
         tr = max(h - l, abs(h - prev_c), abs(l - prev_c))
         tr_list.append(tr)
     return float(np.mean(tr_list[-period:])) if tr_list else 0.0
+
+
+def _sell_monitored_modes() -> tuple[str, ...]:
+    legacy = ("full_auto", "auto", "manual", "custom", "quantum")
+    try:
+        from desktop.arena.participants import arena_modes
+
+        return legacy + arena_modes()
+    except Exception:
+        return legacy
 
 
 def check_sell_signals(mode: str = "full_auto") -> list[dict]:
@@ -161,8 +175,8 @@ def check_sell_signals(mode: str = "full_auto") -> list[dict]:
             })
             continue
 
-        # ── 规则5: VCP 失败 ──
-        if hold_days <= 3 and pnl_pct < -5:
+        # ── 规则5: VCP 失败（给突破后更多波动空间） ──
+        if hold_days <= 3 and pnl_pct < -7:
             signals.append({
                 "code": code, "name": name, "mode": mode,
                 "rule": "VCP失败",
@@ -283,7 +297,7 @@ def check_add_position_signals(mode: str = "full_auto") -> list[dict]:
 def execute_auto_sell() -> dict:
     """
     执行自动卖出：
-    - full_auto/auto/custom/quantum: 交易时间内直接卖出
+    - full_auto/auto/manual/custom/quantum: 交易时间内直接卖出
     - 非交易时间: 生成建议并推送，不执行
     返回: {"executed": [...], "suggested": [...]}
     """
@@ -317,7 +331,7 @@ def execute_auto_sell() -> dict:
 
     # 3. 检查各仓卖出信号
     all_signals = []
-    for mode in ["full_auto", "auto", "custom", "quantum"]:
+    for mode in _sell_monitored_modes():
         signals = check_sell_signals(mode)
         all_signals.extend(signals)
 
@@ -338,7 +352,7 @@ def execute_auto_sell() -> dict:
         action = sig["action"]
         reason = f"{sig['rule']}: {sig['reason']}"
 
-        if mode in {"full_auto", "auto", "custom", "quantum"} and not reject:
+        if mode in _SELL_MONITORED_MODES and not reject:
             # 自主仓与策略仓：卖出信号用于降风险，可自动执行。
             if action == "sell_half":
                 # 半仓卖出：先查当前股数
@@ -360,7 +374,7 @@ def execute_auto_sell() -> dict:
             # 其他仓 / 非交易时间：只推送建议
             _mode_labels = {
                 "full_auto": "完全自主", "auto": "AI推荐",
-                "custom": "自定义", "quantum": "量子",
+                "manual": "AI推荐", "custom": "自定义", "quantum": "量子",
             }
             result["suggested"].append(
                 f"[{_mode_labels.get(mode, mode)}] {code}{name} 建议{action}: {reason}"

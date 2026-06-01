@@ -1,27 +1,33 @@
 @echo off
+setlocal EnableExtensions
+cd /d "%~dp0"
 echo ============================================
-echo  AI 量化交易平台 - 安装定时任务
-echo  每天 10:00 和 14:00 自动运行
+echo  FinQuanta AI Scheduler - Install Tasks
+if not defined FINQUANTA_AI_SCHEDULER_MORNING_TIME set FINQUANTA_AI_SCHEDULER_MORNING_TIME=10:15
+if not defined FINQUANTA_AI_SCHEDULER_AFTERNOON_TIME set FINQUANTA_AI_SCHEDULER_AFTERNOON_TIME=14:00
+echo  Weekdays %FINQUANTA_AI_SCHEDULER_MORNING_TIME% and %FINQUANTA_AI_SCHEDULER_AFTERNOON_TIME%
 echo ============================================
 
-set PYTHON_PATH=python
-set SCRIPT_PATH=%~dp0desktop\auto_scheduler.py
-
-echo.
-echo 创建 10:00 定时任务...
-schtasks /create /tn "AI量化_10点决策" /tr "%PYTHON_PATH% %SCRIPT_PATH%" /sc daily /st 10:00 /f
-if %errorlevel% equ 0 (echo   成功!) else (echo   失败，请以管理员身份运行)
-
-echo.
-echo 创建 14:00 定时任务...
-schtasks /create /tn "AI量化_14点决策" /tr "%PYTHON_PATH% %SCRIPT_PATH%" /sc daily /st 14:00 /f
-if %errorlevel% equ 0 (echo   成功!) else (echo   失败，请以管理员身份运行)
+set TASK_SCRIPT=%~dp0run_ai_scheduler_once.bat
+set LAUNCHER_SCRIPT=%~dp0hidden_task_launcher.vbs
+set TASK_COMMAND=%SystemRoot%\System32\wscript.exe //B "%LAUNCHER_SCRIPT%" "%TASK_SCRIPT%"
 
 echo.
+echo Creating %FINQUANTA_AI_SCHEDULER_MORNING_TIME% task...
+schtasks /create /tn "FinQuantaAiDecisionMorning" /tr "%TASK_COMMAND%" /sc weekly /d MON,TUE,WED,THU,FRI /st %FINQUANTA_AI_SCHEDULER_MORNING_TIME% /f
+if %errorlevel% equ 0 (echo   OK) else (echo   FAILED)
+
+echo.
+echo Creating %FINQUANTA_AI_SCHEDULER_AFTERNOON_TIME% task...
+schtasks /create /tn "FinQuantaAiDecisionAfternoon" /tr "%TASK_COMMAND%" /sc weekly /d MON,TUE,WED,THU,FRI /st %FINQUANTA_AI_SCHEDULER_AFTERNOON_TIME% /f
+if %errorlevel% equ 0 (echo   OK) else (echo   FAILED)
+
+echo.
 echo ============================================
-echo  安装完成！
-echo  任务名: AI量化_10点决策 / AI量化_14点决策
-echo  查看: 任务计划程序 或 schtasks /query /tn "AI量化*"
-echo  卸载: 运行 uninstall_scheduler.bat
+echo  Done.
+echo  Tasks: FinQuantaAiDecisionMorning / FinQuantaAiDecisionAfternoon
+echo  Logs:  logs\ai_scheduler_once.log
+echo  Query: schtasks /query /tn "FinQuantaAiDecisionMorning" /v /fo list
+echo  Uninstall: uninstall_scheduler.bat
 echo ============================================
-pause
+exit /b 0

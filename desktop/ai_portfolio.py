@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from datetime import datetime, date, timedelta
 
 from desktop.data_access import get_kv_json, get_repo, set_kv_json
@@ -24,7 +25,7 @@ def _safe_float(v, default: float = 1_000_000.0) -> float:
     except (TypeError, ValueError):
         return default
 
-_CN_HOLIDAYS = {
+_CN_HOLIDAYS_BUILTIN = {
     date(2025, 1, 1), date(2025, 1, 28), date(2025, 1, 29), date(2025, 1, 30),
     date(2025, 1, 31), date(2025, 2, 1), date(2025, 2, 2), date(2025, 2, 3), date(2025, 2, 4),
     date(2025, 4, 4), date(2025, 4, 5), date(2025, 4, 6),
@@ -41,6 +42,30 @@ _CN_HOLIDAYS = {
     date(2026, 10, 1), date(2026, 10, 2), date(2026, 10, 3), date(2026, 10, 4),
     date(2026, 10, 5), date(2026, 10, 6), date(2026, 10, 7),
 }
+
+_CN_HOLIDAYS_CACHE: set[date] | None = None
+
+
+def _merged_cn_holidays() -> set[date]:
+    global _CN_HOLIDAYS_CACHE
+    if _CN_HOLIDAYS_CACHE is not None:
+        return _CN_HOLIDAYS_CACHE
+    merged = set(_CN_HOLIDAYS_BUILTIN)
+    path = os.path.join("data_cache", "cn_holidays.json")
+    if os.path.exists(path):
+        try:
+            with open(path, encoding="utf-8") as fh:
+                items = json.load(fh)
+            if isinstance(items, list):
+                merged.update(date.fromisoformat(d) for d in items if isinstance(d, str))
+        except Exception as exc:
+            _log.debug("cn_holidays.json load skipped: %s", exc)
+    _CN_HOLIDAYS_CACHE = merged
+    return merged
+
+
+# Backward-compatible alias for legacy imports.
+_CN_HOLIDAYS = _CN_HOLIDAYS_BUILTIN
 
 _WEEKDAY_CN = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
 
@@ -76,7 +101,7 @@ def is_trading_day(d: date | None = None) -> bool:
         d = date.today()
     if d.weekday() >= 5:
         return False
-    return d not in _CN_HOLIDAYS
+    return d not in _merged_cn_holidays()
 
 
 def is_trading_hours() -> bool:
@@ -145,7 +170,15 @@ def _cash_key(mode: str) -> str:
         "custom": "ai_custom_cash",
         "quantum": "ai_quantum_cash",
     }
-    return _MAP.get(mode, "ai_manual_cash")
+    if mode in _MAP:
+        return _MAP[mode]
+    return f"ai_{mode}_cash"
+
+
+def ensure_mode_account(mode: str, initial: float = 1_000_000.0) -> None:
+    key = _cash_key(mode)
+    if get_kv_json(key, None) is None:
+        set_kv_json(key, {"cash": initial, "initial": initial})
 
 
 def get_state(mode: str = "auto") -> dict:
@@ -329,62 +362,19 @@ def _get_trade_count(mode: str) -> int:
         return 0
 
 
-def get_comparison() -> dict:
-    """获取四个仓的对比数据。"""
-    auto = get_state("auto")
-    manual = get_state("manual")
-    full_auto = get_state("full_auto")
-    custom = get_state("custom")
-    quantum = get_state("quantum")
-
-    def _calc(state, prices, mode):
-        mv = sum(prices.get(p["code"], p["entry_price"]) * p["shares"] for p in state["positions"])
-        cost = sum(p["entry_price"] * p["shares"] for p in state["positions"])
-        unrealized_pnl = mv - cost
-        eq = state["cash"] + mv
-        ic = state["initial_capital"]
-        if ic and ic > 0:
-            ret = (eq - ic) / ic * 100
-        else:
-            ret = 0.0
-        closed = state["closed_trades"]
-        realized_pnl = sum(t.get("pnl", 0) for t in closed)
-        wins = sum(1 for t in closed if t.get("pnl", 0) > 0)
-        total_trades = _get_trade_count(mode)
-        open_wins = sum(1 for p in state["positions"]
-                        if prices.get(p["code"], p["entry_price"]) > p["entry_price"])
-        closed_trade_count = len(closed)
-        open_position_count = len(state["positions"])
-        win_rate = wins / closed_trade_count * 100 if closed_trade_count > 0 else 0
-        open_win_rate = open_wins / open_position_count * 100 if open_position_count > 0 else 0
-        return {
-            "equity": eq, "return_pct": ret, "cash": state["cash"],
-            "positions": len(state["positions"]),
-            "total_trades": total_trades,
-            "win_rate": win_rate,
-            "open_win_rate": open_win_rate,
-            "closed_trade_count": closed_trade_count,
-            "realized_pnl": realized_pnl,
-            "unrealized_pnl": unrealized_pnl,
-            "total_pnl": realized_pnl + unrealized_pnl,
-        }
-
-    prices = {}
-    all_codes = set()
-    for s in [auto, manual, full_auto, custom, quantum]:
-        for p in s["positions"]:
-            all_codes.add(p["code"])
-
-    if all_codes:
-        try:
-            from desktop.realtime_data import get_realtime_quotes
-            quotes = get_realtime_quotes(list(all_codes), force=True)
-            for code, q in quotes.items():
-                px = q.get("price", 0)
-                if px and px > 0:
-                    prices[code] = float(px)
-        except Exception:
-            pass
+def _fetch_prices_for_codes(all_codes: set[str]) -> dict[str, float]:
+    prices: dict[str, float] = {}
+    if not all_codes:
+        return prices
+    try:
+        from desktop.realtime_data import get_realtime_quotes
+        quotes = get_realtime_quotes(list(all_codes), force=True)
+        for code, q in quotes.items():
+            px = q.get("price", 0)
+            if px and px > 0:
+                prices[code] = float(px)
+    except Exception:
+        pass
 
     missing = [c for c in all_codes if c not in prices]
     if missing:
@@ -404,12 +394,78 @@ def get_comparison() -> dict:
                         pass
         except Exception:
             pass
+    return prices
+
+
+def _calc_mode_stats(state: dict, prices: dict, mode: str) -> dict:
+    mv = sum(prices.get(p["code"], p["entry_price"]) * p["shares"] for p in state["positions"])
+    cost = sum(p["entry_price"] * p["shares"] for p in state["positions"])
+    unrealized_pnl = mv - cost
+    eq = state["cash"] + mv
+    ic = state["initial_capital"]
+    if ic and ic > 0:
+        ret = (eq - ic) / ic * 100
+    else:
+        ret = 0.0
+    closed = state["closed_trades"]
+    realized_pnl = sum(t.get("pnl", 0) for t in closed)
+    wins = sum(1 for t in closed if t.get("pnl", 0) > 0)
+    total_trades = _get_trade_count(mode)
+    open_wins = sum(
+        1 for p in state["positions"]
+        if prices.get(p["code"], p["entry_price"]) > p["entry_price"]
+    )
+    closed_trade_count = len(closed)
+    open_position_count = len(state["positions"])
+    win_rate = wins / closed_trade_count * 100 if closed_trade_count > 0 else 0
+    open_win_rate = open_wins / open_position_count * 100 if open_position_count > 0 else 0
+    return {
+        "equity": eq,
+        "return_pct": ret,
+        "cash": state["cash"],
+        "positions": len(state["positions"]),
+        "total_trades": total_trades,
+        "win_rate": win_rate,
+        "open_win_rate": open_win_rate,
+        "closed_trade_count": closed_trade_count,
+        "realized_pnl": realized_pnl,
+        "unrealized_pnl": unrealized_pnl,
+        "total_pnl": realized_pnl + unrealized_pnl,
+    }
+
+
+def get_modes_comparison(modes: list[str]) -> dict:
+    """Compare arbitrary portfolio modes (used by Agent Arena)."""
+    states = {mode: get_state(mode) for mode in modes}
+    all_codes: set[str] = set()
+    for state in states.values():
+        for p in state["positions"]:
+            all_codes.add(p["code"])
+    prices = _fetch_prices_for_codes(all_codes)
+    result = {mode: _calc_mode_stats(states[mode], prices, mode) for mode in modes}
+    result["prices"] = prices
+    return result
+
+
+def get_comparison() -> dict:
+    """获取四个仓的对比数据。"""
+    auto = get_state("auto")
+    manual = get_state("manual")
+    full_auto = get_state("full_auto")
+    custom = get_state("custom")
+    quantum = get_state("quantum")
+
+    all_codes: set[str] = set()
+    for s in [auto, manual, full_auto, custom, quantum]:
+        for p in s["positions"]:
+            all_codes.add(p["code"])
+    prices = _fetch_prices_for_codes(all_codes)
 
     return {
-        "auto": _calc(auto, prices, "auto"),
-        "manual": _calc(manual, prices, "manual"),
-        "full_auto": _calc(full_auto, prices, "full_auto"),
-        "custom": _calc(custom, prices, "custom"),
-        "quantum": _calc(quantum, prices, "quantum"),
+        "auto": _calc_mode_stats(auto, prices, "auto"),
+        "manual": _calc_mode_stats(manual, prices, "manual"),
+        "full_auto": _calc_mode_stats(full_auto, prices, "full_auto"),
+        "custom": _calc_mode_stats(custom, prices, "custom"),
+        "quantum": _calc_mode_stats(quantum, prices, "quantum"),
         "prices": prices,
     }

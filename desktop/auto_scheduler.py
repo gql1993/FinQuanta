@@ -1,6 +1,7 @@
 """
 定时自动决策 + 微信推送
-每天 10:00 和 14:00 自动运行 AI 决策，结果推送到微信。
+默认工作日 10:15 和 14:00 自动运行 AI 决策，结果推送到微信。
+可通过 FINQUANTA_AI_SCHEDULER_MORNING_TIME / FINQUANTA_AI_SCHEDULER_AFTERNOON_TIME 覆盖。
 
 两种运行方式:
   1. 客户端内置定时器（客户端开着就行）
@@ -13,18 +14,26 @@ import json
 import logging
 from datetime import datetime, date
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+os.chdir(_PROJECT_ROOT)
+sys.path.insert(0, _PROJECT_ROOT)
 
+from core.config.scheduler import get_ai_scheduler_settings
 from desktop.data_access import get_kv_json, set_kv_json
 
 _log = logging.getLogger("auto_scheduler")
 
-SCHEDULE_TIMES = ["10:00", "14:00"]
+SCHEDULE_TIMES = get_ai_scheduler_settings().times
 
 
 def _should_run_today() -> bool:
     """检查今天是否为交易日（简单判断：周一到周五）。"""
     today = date.today()
+    try:
+        from desktop.ai_portfolio import is_trading_day
+        return bool(is_trading_day(today))
+    except Exception:
+        pass
     if today.weekday() >= 5:
         return False
     # 检查节假日
@@ -143,23 +152,31 @@ def _build_push_message(results: dict) -> str:
         lines.append("　　暂无操作")
     lines.append("")
 
-    # 3. 仓位对比
+    # 3. Agent Arena 排行榜
     try:
-        from desktop.ai_portfolio import get_comparison
-        comp = get_comparison()
-        lines.append("3. 📊 仓位对比")
-        for i, (key, label) in enumerate([
-            ("full_auto", "完全自主"), ("auto", "AI推荐"),
-            ("custom", "自定义"), ("quantum", "量子仓"),
-        ], 1):
-            c = comp.get(key, {})
-            lines.append(
-                f"　　({i}) {label}: 收益{c.get('return_pct', 0):+.2f}%  "
-                f"胜率{c.get('win_rate', 0):.0f}%  "
-                f"交易{c.get('total_trades', 0)}笔"
-            )
+        from desktop.arena.leaderboard import format_leaderboard_text, get_leaderboard
+
+        lines.append("3. 🏆 Agent Arena 排行榜")
+        for line in format_leaderboard_text(get_leaderboard()).splitlines()[1:]:
+            if line.strip():
+                lines.append(f"　　{line}")
     except Exception:
-        pass
+        try:
+            from desktop.ai_portfolio import get_comparison
+            comp = get_comparison()
+            lines.append("3. 📊 仓位对比")
+            for i, (key, label) in enumerate([
+                ("full_auto", "完全自主"), ("auto", "AI推荐"),
+                ("custom", "自定义"), ("quantum", "量子仓"),
+            ], 1):
+                c = comp.get(key, {})
+                lines.append(
+                    f"　　({i}) {label}: 收益{c.get('return_pct', 0):+.2f}%  "
+                    f"胜率{c.get('win_rate', 0):.0f}%  "
+                    f"交易{c.get('total_trades', 0)}笔"
+                )
+        except Exception:
+            pass
 
     return "\n".join(lines)
 
@@ -195,6 +212,17 @@ if __name__ == "__main__":
     )
 
     board = sys.argv[1] if len(sys.argv) > 1 else "人工智能"
+    if not _should_run_today():
+        print(f"非交易日，跳过定时任务（板块: {board}）")
+        sys.exit(0)
     print(f"手动执行定时任务（板块: {board}）...")
     result = run_scheduled_task(board)
     print(f"完成: 自主仓 {len(result['auto_results'])} 条, 推荐 {len(result['manual_suggestions'])} 条, 推送 {'成功' if result['pushed'] else '未推送'}")
+    try:
+        from desktop.arena.scheduler_hooks import check_and_run_arena
+        ar = check_and_run_arena(boards=[board])
+        if ar:
+            leader = (ar.get("leaderboard") or {}).get("leader", "")
+            print(f"竞技场: 完成, 领先 {leader or '-'}")
+    except Exception as e:
+        print(f"竞技场: {e}")

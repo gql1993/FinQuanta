@@ -8,6 +8,10 @@ if not defined FINQUANTA_OPENCLAW_GATEWAY_PORT set FINQUANTA_OPENCLAW_GATEWAY_PO
 if not defined FINQUANTA_OPENCLAW_GATEWAY_BASE set FINQUANTA_OPENCLAW_GATEWAY_BASE=http://%FINQUANTA_OPENCLAW_GATEWAY_HOST%:%FINQUANTA_OPENCLAW_GATEWAY_PORT%
 if not defined FINQUANTA_OPENCLAW_GATEWAY_TIMEOUT_SECONDS set FINQUANTA_OPENCLAW_GATEWAY_TIMEOUT_SECONDS=8.0
 if not defined FINQUANTA_OPENCLAW_GATEWAY_ENTRY set FINQUANTA_OPENCLAW_GATEWAY_ENTRY=C:\Program Files\nodejs\node_modules\openclaw\openclaw.mjs
+if not defined FINQUANTA_OPENCLAW_GATEWAY_WINDOW set FINQUANTA_OPENCLAW_GATEWAY_WINDOW=normal
+if not exist logs mkdir logs
+if not defined FINQUANTA_OPENCLAW_GATEWAY_STDOUT set FINQUANTA_OPENCLAW_GATEWAY_STDOUT=%~dp0logs\openclaw_gateway_stdout.log
+if not defined FINQUANTA_OPENCLAW_GATEWAY_STDERR set FINQUANTA_OPENCLAW_GATEWAY_STDERR=%~dp0logs\openclaw_gateway_stderr.log
 
 if /I "%FINQUANTA_OPENCLAW_GATEWAY_HOST%"=="0.0.0.0" (
   set GATEWAY_PROBE_HOST=127.0.0.1
@@ -25,6 +29,7 @@ echo   PROBE HOST   = %GATEWAY_PROBE_HOST%
 echo   PROBE PORT   = %FINQUANTA_OPENCLAW_GATEWAY_PORT%
 echo   TIMEOUT SEC  = %FINQUANTA_OPENCLAW_GATEWAY_TIMEOUT_SECONDS%
 echo   ENTRY        = %FINQUANTA_OPENCLAW_GATEWAY_ENTRY%
+echo   WINDOW       = %FINQUANTA_OPENCLAW_GATEWAY_WINDOW%
 echo ================================================
 echo.
 
@@ -60,8 +65,13 @@ if not exist "%FINQUANTA_OPENCLAW_GATEWAY_ENTRY%" (
   exit /b 1
 )
 
-echo [INFO] Starting OpenClaw gateway in a new window...
-start "FinQuanta OpenClaw Gateway" cmd /k node "%FINQUANTA_OPENCLAW_GATEWAY_ENTRY%" gateway --port %FINQUANTA_OPENCLAW_GATEWAY_PORT%
+if /I "%FINQUANTA_OPENCLAW_GATEWAY_WINDOW%"=="hidden" (
+  echo [INFO] Starting OpenClaw gateway hidden in background...
+  powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command "Start-Process -WindowStyle Hidden -FilePath 'node' -ArgumentList @('%FINQUANTA_OPENCLAW_GATEWAY_ENTRY%','gateway','--port','%FINQUANTA_OPENCLAW_GATEWAY_PORT%') -RedirectStandardOutput '%FINQUANTA_OPENCLAW_GATEWAY_STDOUT%' -RedirectStandardError '%FINQUANTA_OPENCLAW_GATEWAY_STDERR%'"
+) else (
+  echo [INFO] Starting OpenClaw gateway in a new window...
+  start "FinQuanta OpenClaw Gateway" cmd /k node "%FINQUANTA_OPENCLAW_GATEWAY_ENTRY%" gateway --port %FINQUANTA_OPENCLAW_GATEWAY_PORT%
+)
 
 set /a RETRIES=20
 :wait_probe

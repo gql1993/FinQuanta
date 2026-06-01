@@ -99,12 +99,18 @@ class DashboardPanel(QWidget):
         comp_group = QGroupBox("六仓持仓摘要")
         cg = QGridLayout(comp_group)
         cg.setSpacing(6)
-        _headers = ["总资产", "浮动盈亏", "收益率", "持仓数", "可用现金", "已平仓胜率", "浮盈占比", "交易数", "总盈亏"]
+        _headers = ["总资产", "浮动盈亏", "收益率", "持仓数", "可用现金", "平仓胜率", "浮盈占比", "交易数", "盈亏"]
+        _header_tooltips = {
+            "平仓胜率": "只统计已平仓交易中，盈利交易占全部已平仓交易的比例。",
+            "浮盈占比": "当前仍持有的仓位里，处于浮盈状态的持仓占比。",
+        }
         cg.addWidget(QLabel(""), 0, 0)
         for j, h in enumerate(_headers):
             lbl = QLabel(h)
             lbl.setFont(QFont("", 10, QFont.Weight.Bold))
             lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            if h in _header_tooltips:
+                lbl.setToolTip(_header_tooltips[h])
             cg.addWidget(lbl, 0, j + 1)
         _mode_labels = [
             "💼 手动仓",
@@ -170,7 +176,7 @@ class DashboardPanel(QWidget):
 
     def update_comparison(self, comp: dict, manual_summary: dict = None):
         """更新六仓摘要对比表（手动仓 + 5 AI 仓）。
-        列: 总资产, 浮动盈亏, 收益率, 持仓数, 可用现金, 已平仓胜率, 浮盈占比, 交易数, 总盈亏
+        列: 总资产, 浮动盈亏, 收益率, 持仓数, 可用现金, 平仓胜率, 浮盈占比, 交易数, 盈亏
         """
         def _color(lbl, v_str, color_cols=()):
             lbl.setText(v_str)
@@ -195,8 +201,8 @@ class DashboardPanel(QWidget):
                 f"{ret:+.2f}%",
                 str(n_pos),
                 f"¥{cash:,.0f}",
-                "-",
-                "-",
+                "不适用",
+                "不适用",
                 str(total_trades),
                 f"¥{total_pnl:+,.0f}",
             ]

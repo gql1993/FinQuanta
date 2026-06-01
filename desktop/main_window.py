@@ -37,6 +37,7 @@ from desktop.panels.backtest import BacktestPanel
 from desktop.panels.stock_analysis import StockAnalysisPanel
 from desktop.panels.ai_chat import AIChatPanel
 from desktop.panels.ai_portfolio_panel import AIPortfolioPanel
+from desktop.panels.arena_panel import ArenaPanel
 from desktop.panels.short_term_panel import ShortTermPanel
 from desktop.panels.trend_verify_panel import TrendVerifyPanel
 from desktop.panels.settings import SettingsPanel
@@ -241,6 +242,7 @@ class MainWindow(QMainWindow):
         self.stock_analysis = StockAnalysisPanel()
         self.ai_chat = AIChatPanel()
         self.ai_portfolio = AIPortfolioPanel()
+        self.arena = ArenaPanel()
         self.short_term = ShortTermPanel()
         self.event_panel = self.short_term.event_panel
         self.fund_panel = self.short_term.fund_panel
@@ -260,6 +262,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.short_term, "⚡ 短期选股")
         self.tabs.addTab(self.portfolio, "💼 手动仓")
         self.tabs.addTab(self.ai_portfolio, "🤖 AI仓")
+        self.tabs.addTab(self.arena, "🏆 策略竞技场")
         self.tabs.addTab(self.ai_chat, "💬 AI助手")
         self.tabs.addTab(self.openclaw, "🦀 OpenClaw")
         self.tabs.addTab(self.ops_center, "🛰 运行中心")
@@ -354,6 +357,7 @@ class MainWindow(QMainWindow):
         self.ai_portfolio.btn_action_condition.clicked.connect(lambda: self._action_condition("ai"))
         self.ai_portfolio.btn_action_ai_suggest.clicked.connect(lambda: self._action_ai_suggest("ai"))
         self.ai_portfolio.tracking_table.cellDoubleClicked.connect(self._on_tracking_dblclick)
+        self.arena.set_run_handler(self._on_arena_run_cycle)
         self.settings.combo_theme.currentTextChanged.connect(
             lambda t: self._set_theme("dark" if t == "深色" else "light")
         )
@@ -663,6 +667,7 @@ class MainWindow(QMainWindow):
         self._load_strategy_catalog()
         self._load_board_tree()
         self._refresh_ai_portfolio()
+        self._refresh_arena()
         try:
             from desktop.event_strategy import get_events
             self.event_panel.update_history(get_events(50))
@@ -1784,12 +1789,10 @@ class MainWindow(QMainWindow):
             # 确定候选股票池
             codes = []
             if "扫描选股" in source:
-                cur = conn.execute("SELECT value FROM kv_store WHERE key='last_scan_results'")
-                row = cur.fetchone()
-                if row:
-                    raw = row[0]
-                    scan = json.loads(raw) if isinstance(raw, str) else (raw or [])
-                    codes = [s.get("代码", "") for s in scan[:60] if s.get("代码")]
+                from desktop.scan_store import resolve_scan_results
+
+                scan, _, _ = resolve_scan_results()
+                codes = [s.get("代码", "") for s in scan[:60] if s.get("代码")]
             elif "手动" in source:
                 raw = self.screening.quantum_codes_input.text().strip()
                 codes = [c.strip() for c in raw.split(",") if c.strip() and len(c.strip()) == 6]
@@ -1915,12 +1918,10 @@ class MainWindow(QMainWindow):
 
             codes = []
             if "扫描选股" in source:
-                cur = conn.execute("SELECT value FROM kv_store WHERE key='last_scan_results'")
-                row = cur.fetchone()
-                if row:
-                    raw = row[0]
-                    scan = json.loads(raw) if isinstance(raw, str) else (raw or [])
-                    codes = [s.get("代码", "") for s in scan[:80] if s.get("代码")]
+                from desktop.scan_store import resolve_scan_results
+
+                scan, _, _ = resolve_scan_results()
+                codes = [s.get("代码", "") for s in scan[:80] if s.get("代码")]
             elif "手动" in source:
                 raw = self.screening.pure_q_codes_input.text().strip()
                 codes = [c.strip() for c in raw.split(",") if c.strip() and len(c.strip()) == 6]
@@ -2509,6 +2510,8 @@ class MainWindow(QMainWindow):
 
         self.screening.progress.setVisible(False)
         self.screening.populate_results(rows, per_strategy=per_strategy if is_multi else {})
+        if not is_multi:
+            self.screening.apply_single_scan_filters()
         n = len(rows)
         log_system_event(
             "ui",
@@ -2516,15 +2519,20 @@ class MainWindow(QMainWindow):
             "扫描完成",
             detail=f"candidates={n}, multi={is_multi}, overlap={overlap_count}",
         )
+        # 表格状态由 populate_results → _apply_aggregate_filters 更新（含筛选后数量）
         if is_multi:
-            self.screening.status_label.setText(f"多策略扫描完成，{n} 只候选，重复命中 {overlap_count} 只")
             self.status.showMessage(f"多策略扫描完成: {n} 只候选，重复命中 {overlap_count} 只")
         else:
-            self.screening.status_label.setText(f"扫描完成，{n} 只候选")
             self.status.showMessage(f"选股完成: {n} 只候选")
         # 缓存扫描结果供 AI 仓使用
         if rows:
-            self._save_scan_results(rows)
+            strategy_ids = payload.get("strategy_ids", []) or []
+            sid = (
+                strategy_ids[0]
+                if len(strategy_ids) == 1
+                else (self.screening.combo_strategy.currentData() or "sepa")
+            )
+            self._save_scan_results(rows, strategy_id=str(sid))
             # 自动记录强烈买入信号到走势验证
             try:
                 from desktop.trend_verify import record_signals
@@ -2540,19 +2548,13 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
 
-    def _save_scan_results(self, candidates: list[dict]):
+    def _save_scan_results(self, candidates: list[dict], *, strategy_id: str | None = None):
         """将选股雷达扫描结果缓存到 SQLite，供 AI 决策引擎使用。"""
         try:
-            import json
-            conn = self._get_db()
-            conn.execute(
-                "INSERT OR REPLACE INTO kv_store VALUES (?,?,?)",
-                ("last_scan_results",
-                 json.dumps(candidates[:100], ensure_ascii=False),
-                 __import__("datetime").datetime.now().isoformat()),
-            )
-            conn.commit()
-            conn.close()
+            from desktop.scan_store import save_scan_results
+
+            sid = strategy_id or self.screening.combo_strategy.currentData() or "sepa"
+            save_scan_results(candidates[:100], source="ui", strategy_id=str(sid))
         except Exception:
             pass
 
@@ -5658,6 +5660,17 @@ class MainWindow(QMainWindow):
                 latest.get("items", []),
                 latest.get("guardrail_summary", {}),
             )
+            try:
+                from desktop.scan_store import resolve_scan_results
+
+                rows, scan_meta, scan_warning = resolve_scan_results()
+                self.ai_portfolio.update_scan_meta(
+                    scan_meta,
+                    count=len(rows),
+                    warning=scan_warning,
+                )
+            except Exception as scan_exc:
+                _log.debug("scan meta refresh skipped: %s", scan_exc)
         except Exception as e:
             _log.error(f"refresh_ai_portfolio error: {e}")
 
@@ -6074,10 +6087,44 @@ class MainWindow(QMainWindow):
         self.ai_chat.refresh_sessions()
         self.status.showMessage("AI 回复完成")
 
+    def _refresh_arena(self):
+        try:
+            self.arena.refresh()
+        except Exception as e:
+            _log.debug(f"refresh_arena error: {e}")
+
+    def _on_arena_run_cycle(self):
+        boards = self.ai_portfolio.get_selected_boards()
+        if not boards:
+            boards = ["人工智能"]
+        self.status.showMessage("策略竞技场运行中...")
+        self.arena.btn_run.setEnabled(False)
+
+        def _do():
+            from desktop.arena.runner import run_arena_cycle
+            return run_arena_cycle(boards)
+
+        def _done(result):
+            self.arena.btn_run.setEnabled(True)
+            self._refresh_arena()
+            n = len(result.get("participants_run", []))
+            self.status.showMessage(f"策略竞技场完成: {n} 位操作手")
+
+        def _err(msg):
+            self.arena.btn_run.setEnabled(True)
+            self.status.showMessage(f"策略竞技场失败: {msg}")
+
+        w = Worker(_do)
+        w.finished.connect(_done)
+        w.error.connect(_err)
+        w.start()
+        self._arena_worker = w
+
     def _on_auto_refresh(self):
         """每60秒自动刷新：更新仪表盘价格和持仓盈亏。"""
         try:
             self._load_dashboard()
+            self._refresh_arena()
         except Exception as e:
             _log.debug(f"auto refresh error: {e}")
 
@@ -6104,5 +6151,16 @@ class MainWindow(QMainWindow):
                 )
                 self._refresh_ai_portfolio()
                 _log.info(f"scheduled: full={n_full}, auto={n_auto}, manual={n_manual}, {pushed}")
+            arena_result = None
+            try:
+                from desktop.arena.scheduler_hooks import check_and_run_arena
+                arena_result = check_and_run_arena(boards=boards)
+            except Exception as arena_exc:
+                _log.error(f"arena scheduled error: {arena_exc}")
+            if arena_result:
+                self._refresh_arena()
+                leader = (arena_result.get("leaderboard") or {}).get("leader", "")
+                self.status.showMessage(f"⏰ 策略竞技场已自动运行 (领先: {leader or '-'})")
+                _log.info("scheduled arena cycle completed")
         except Exception as e:
             _log.error(f"scheduled task error: {e}")

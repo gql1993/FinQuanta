@@ -38,35 +38,29 @@ def auto_buy_top3_from_scan() -> list[str]:
     从选股雷达最近扫描结果中取评分 Top3，自动买入自定义仓。
     """
     from desktop.ai_portfolio import buy, get_state, check_trading_time
+    from desktop.scan_store import format_scan_meta_summary, resolve_scan_results
 
-    conn = RepoCompatConnection()
+    candidates, scan_meta, scan_warning = resolve_scan_results()
+    if scan_warning and not candidates:
+        return [f"扫描来源过滤：{scan_warning}"]
 
-    # 读取扫描结果
-    cur = conn.execute("SELECT value FROM kv_store WHERE key='last_scan_results'")
-    row = cur.fetchone()
-    if not row:
-        conn.close()
+    if not candidates:
         return ["无扫描结果，请先在选股雷达执行扫描"]
 
-    try:
-        raw = row[0]
-        candidates = json.loads(raw) if isinstance(raw, str) else (raw or [])
-    except Exception:
-        conn.close()
-        return ["扫描结果解析失败"]
-
     # 按评分排序取 Top3
-    candidates.sort(key=lambda x: int(x.get("评分", "0")), reverse=True)
+    candidates = sorted(candidates, key=lambda x: int(x.get("评分", "0") or 0), reverse=True)
     top3 = candidates[:3]
 
     if not top3:
-        conn.close()
         return ["扫描结果为空"]
+
+    meta_hint = format_scan_meta_summary(scan_meta, count=len(candidates), warning=scan_warning)
 
     state = get_state("custom")
     existing_codes = {p["code"] for p in state["positions"]}
 
-    results = []
+    results = [meta_hint] if meta_hint else []
+    conn = RepoCompatConnection()
     for c in top3:
         code = c.get("代码", "")
         name = c.get("名称", "")
@@ -96,6 +90,18 @@ def auto_buy_top3_from_scan() -> list[str]:
             results.append(f"{code} {name} 已在仓中，跳过")
             continue
 
+        if board:
+            try:
+                from desktop.ai_trader import _WEAK_BOARD_5D_THRESHOLD
+                from desktop.arena.loss_analysis import get_board_return_window
+
+                board_5d = get_board_return_window(board)
+                if board_5d is not None and board_5d <= _WEAK_BOARD_5D_THRESHOLD:
+                    results.append(f"{code} {name} 板块[{board}]近5日{board_5d:+.1f}%未上涨，跳过")
+                    continue
+            except Exception:
+                pass
+
         # 计算买入股数（均分资金，100股整数倍）
         available = state["cash"]
         per_stock = available / max(3 - len(state["positions"]), 1)
@@ -119,7 +125,8 @@ def auto_buy_top3_from_scan() -> list[str]:
 
     conn.commit()
     conn.close()
-    return results if results else ["Top3 已全部在仓中"]
+    trade_msgs = [r for r in results if r != meta_hint]
+    return results if trade_msgs else (results if results else ["Top3 已全部在仓中"])
 
 
 def auto_buy_board_top3(board_name: str) -> list[str]:

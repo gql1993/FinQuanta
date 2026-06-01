@@ -22,6 +22,7 @@ from datetime import datetime, date
 
 from core.ai.context_builder import build_openclaw_context_text
 from desktop.data_access import get_repo, get_kv_json, set_kv_json
+from desktop.scan_store import get_scan_results, get_scan_results_meta, resolve_scan_results
 from desktop.task_orchestrator import log_system_event, run_task
 
 _log = logging.getLogger("openclaw_engine")
@@ -195,23 +196,14 @@ def get_data_sources_status() -> list[dict]:
         "last_update": board_update, "count": r3[1],
     })
 
-    r4 = repo.fetchone("SELECT value, updated_at FROM kv_store WHERE key='last_scan_results'", ())
-    scan_count = 0
-    if r4 and r4[0] is not None:
-        raw = r4[0]
-        try:
-            if isinstance(raw, str):
-                scan_count = len(json.loads(raw))
-            elif isinstance(raw, list):
-                scan_count = len(raw)
-            else:
-                scan_count = len(raw) if hasattr(raw, "__len__") and not isinstance(raw, (str, bytes)) else 0
-        except Exception:
-            scan_count = 0
+    scan_rows = get_scan_results()
+    scan_meta = get_scan_results_meta()
+    scan_count = len(scan_rows)
     sources.append({
         "name": "选股雷达结果", "type": "策略",
         "status": "正常" if scan_count > 0 else "无数据",
-        "last_update": str(r4[1])[:19] if r4 and r4[1] is not None else "-", "count": scan_count,
+        "last_update": str(scan_meta.get("written_at", "-"))[:19],
+        "count": scan_count,
     })
 
     try:
@@ -272,7 +264,9 @@ def run_full_pipeline(boards: list[str] = None, callback=None) -> dict:
     def _hydrate_candidates_from_last_scan(limit: int = 30) -> int:
         if results.get("candidates"):
             return 0
-        rows = get_kv_json("last_scan_results", []) or []
+        rows = resolve_scan_results()[0]
+        if not isinstance(rows, list):
+            rows = []
         hydrated = []
         for row in rows[: max(1, int(limit or 30))]:
             if not isinstance(row, dict):
@@ -650,7 +644,13 @@ def run_full_pipeline(boards: list[str] = None, callback=None) -> dict:
     def _s3():
         try:
             from desktop.agents import run_multi_agent_cycle
-            ma_result = run_multi_agent_cycle(boards=boards, mode="auto", execute=False, persist_memory=False)
+            ma_result = run_multi_agent_cycle(
+                boards=boards,
+                mode="auto",
+                execute=False,
+                persist_memory=False,
+                prefilled_candidates=results.get("candidates") or None,
+            )
             decisions = ma_result.get("decisions", [])
             results["decisions"] = decisions
             results["raw_decisions"] = ma_result.get("raw_decisions", [])

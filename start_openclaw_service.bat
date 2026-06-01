@@ -6,6 +6,7 @@ if not exist logs mkdir logs
 if not defined FINQUANTA_OPENCLAW_SERVICE_KEEPALIVE set FINQUANTA_OPENCLAW_SERVICE_KEEPALIVE=1
 if not defined FINQUANTA_OPENCLAW_RESTART_DELAY_SECONDS set FINQUANTA_OPENCLAW_RESTART_DELAY_SECONDS=30
 if not defined FINQUANTA_OPENCLAW_SERVICE_LOG set FINQUANTA_OPENCLAW_SERVICE_LOG=logs\openclaw_gateway_service.log
+if not defined FINQUANTA_OPENCLAW_GATEWAY_WINDOW set FINQUANTA_OPENCLAW_GATEWAY_WINDOW=hidden
 
 echo ========================================
 echo   FinQuanta OpenClaw Gateway Wrapper

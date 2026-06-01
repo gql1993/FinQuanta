@@ -1,3 +1,5 @@
+import json
+import json
 import os
 import sys
 from pathlib import Path
@@ -543,7 +545,7 @@ def test_multi_agent_cycle_emits_agent_trace(monkeypatch):
         agents.AnalysisAgent,
         "analyze",
         staticmethod(
-            lambda intel, boards: {
+            lambda intel, boards, prefilled_candidates=None: {
                 "market_regime": "🟡 震荡",
                 "candidates": [
                     {
@@ -609,6 +611,370 @@ def test_multi_agent_cycle_emits_agent_trace(monkeypatch):
     assert result.get("trace", {}).get("trace_id_hex")
     assert {"intelligence", "analysis", "verification", "decision", "verification_guardrail"}.issubset(keys)
     assert all(item.get("status") == "ok" for item in trace_items)
+
+
+def test_adapt_pipeline_candidates_maps_s2_fields():
+    import desktop.agents as agents
+
+    adapted = agents.adapt_pipeline_candidates(
+        [
+            {
+                "code": "300750",
+                "name": "宁德时代",
+                "score": 82,
+                "price": 188.5,
+                "board": "电池",
+                "momentum_1m": 4.2,
+                "strategy": "SEPA",
+            },
+            {"code": "300750", "name": "重复", "score": 10},
+            {"name": "missing-code", "score": 50},
+        ]
+    )
+
+    assert len(adapted) == 1
+    item = adapted[0]
+    assert item["code"] == "300750"
+    assert item["total"] == 82
+    assert item["price"] == 188.5
+    assert item["board"] == "电池"
+    assert item["candidate_source"] == "openclaw_s2"
+    assert "SEPA" in item["signals"]
+    assert item["momentum"] == round(min(100, max(0, 50 + 4.2 * 3)))
+
+
+def test_analysis_agent_uses_prefilled_candidates(monkeypatch):
+    import desktop.agents as agents
+
+    monkeypatch.setattr(
+        agents,
+        "_enrich_pipeline_candidates",
+        lambda candidates, conn: candidates,
+    )
+
+    intel = {"market": {"total": 10, "up": 6, "down": 3}}
+    prefilled = [
+        {
+            "code": "688981",
+            "name": "中芯国际",
+            "score": 76,
+            "price": 45.6,
+            "board": "芯片",
+            "momentum_1m": 2.0,
+            "strategy": "VCP",
+        }
+    ]
+
+    result = agents.AnalysisAgent.analyze(
+        intel,
+        ["芯片"],
+        prefilled_candidates=prefilled,
+    )
+
+    assert result["candidate_source"] == "openclaw_s2"
+    assert result["prefilled_count"] == 1
+    assert len(result["candidates"]) == 1
+    assert result["candidates"][0]["code"] == "688981"
+    assert result["candidates"][0]["total"] == 76
+
+
+def test_multi_agent_cycle_passes_prefilled_candidates(monkeypatch):
+    import desktop.agents as agents
+
+    captured: dict = {}
+
+    def fake_analyze(intel, boards, prefilled_candidates=None):
+        captured["prefilled_candidates"] = prefilled_candidates
+        return {
+            "market_regime": "🟡 震荡",
+            "candidates": [],
+            "candidate_source": "openclaw_s2" if prefilled_candidates else "board_scan",
+            "prefilled_count": len(prefilled_candidates or []),
+        }
+
+    monkeypatch.setattr(
+        agents.IntelligenceAgent,
+        "gather",
+        staticmethod(lambda boards: {"market": {"total": 3, "up": 2, "down": 1}, "events": [], "boards": []}),
+    )
+    monkeypatch.setattr(agents.AnalysisAgent, "analyze", staticmethod(fake_analyze))
+    monkeypatch.setattr(
+        agents.VerificationAgent,
+        "verify",
+        staticmethod(lambda analysis: {"verified_candidates": [], "questionable_candidates": [], "rejected_candidates": []}),
+    )
+    monkeypatch.setattr(
+        agents.DecisionAgent,
+        "decide",
+        staticmethod(lambda *args, **kwargs: '{"analysis":"ok","decisions":[]}'),
+    )
+    monkeypatch.setattr("desktop.ai_trader._build_portfolio_context", lambda mode: "portfolio context")
+
+    prefilled = [{"code": "300308", "name": "中际旭创", "score": 80, "price": 120.0, "board": "芯片"}]
+    result = agents.run_multi_agent_cycle(
+        boards=["芯片"],
+        mode="auto",
+        execute=False,
+        persist_memory=False,
+        prefilled_candidates=prefilled,
+    )
+
+    assert captured["prefilled_candidates"] == prefilled
+    analysis_trace = next(item for item in result["agent_trace"] if item.get("agent_key") == "analysis")
+    assert analysis_trace["input_summary"]["prefilled_count"] == "1"
+    assert analysis_trace["input_summary"]["candidate_source"] == "openclaw_s2"
+
+
+def test_normalize_buy_decisions_overwrites_price():
+    from core.ai.decision_grounding import normalize_buy_decisions
+
+    normalized, adjustments = normalize_buy_decisions(
+        [{"action": "buy", "code": "300750", "price": 999.0, "shares": 500}],
+        {"300750": 188.5},
+        tolerance=0.01,
+    )
+
+    assert normalized[0]["price"] == 188.5
+    assert adjustments[0]["reason"] == "price_grounded"
+    assert adjustments[0]["shares_to"] == 2600
+
+
+def test_build_grounded_price_map_from_verification():
+    from core.ai.decision_grounding import build_grounded_price_map_from_verification
+
+    price_map = build_grounded_price_map_from_verification(
+        {
+            "verified_candidates": [{"code": "300308", "price": 120.0}],
+            "questionable_candidates": [{"code": "688981", "price": 45.6}],
+        }
+    )
+
+    assert price_map == {"300308": 120.0, "688981": 45.6}
+
+
+def test_verified_candidate_context_includes_price():
+    import desktop.agents as agents
+
+    text = agents._build_verified_candidate_context(
+        {
+            "verified_candidates": [
+                {
+                    "code": "300750",
+                    "name": "宁德时代",
+                    "price": 188.5,
+                    "total": 82,
+                    "verification_score": 80,
+                    "board_risk_level": "low",
+                }
+            ],
+            "questionable_candidates": [],
+            "rejected_candidates": [],
+        }
+    )
+
+    assert "现价¥188.50" in text
+    assert "【价格约束】" in text
+
+
+def test_apply_decision_price_grounding_uses_candidate_map(monkeypatch):
+    from core.ai.decision_engine import apply_decision_price_grounding
+
+    monkeypatch.setattr(
+        "core.ai.decision_engine.build_candidates_context",
+        lambda board="人工智能", limit=30: {
+            "items": [{"code": "300502", "price": 378.95}],
+        },
+    )
+
+    result = apply_decision_price_grounding(
+        {
+            "analysis": "ok",
+            "decisions": [{"action": "buy", "code": "300502", "price": 400.0, "shares": 100}],
+        },
+        board="人工智能",
+    )
+
+    assert result["decisions"][0]["price"] == 378.95
+    assert result["decision_grounding"]["adjustments"]
+
+
+def test_summarize_actual_payload_from_calibrated_structure():
+    from core.ai.context_builder import _summarize_actual_payload
+
+    stats = _summarize_actual_payload(
+        {
+            "executed_buys": [
+                {"code": "300750", "pnl_pct": 4.2, "correct": True},
+                {"code": "688981", "pnl_pct": -2.1, "correct": False},
+            ],
+            "summary": {
+                "executed_count": 2,
+                "executed_correct": 1,
+                "blocked_avoided_losses": 1,
+                "blocked_missed_gains": 0,
+            },
+        }
+    )
+
+    assert stats["executed_count"] == 2
+    assert stats["executed_correct"] == 1
+    assert stats["correct_ratio"] == 0.5
+    assert stats["avg_pnl"] == 1.05
+    assert stats["blocked_avoided_losses"] == 1
+
+
+def test_build_decision_history_context_reads_calibrated_summary():
+    from core.ai.context_builder import build_decision_history_context
+
+    row = (
+        "2025-11-03T10:00:00",
+        "auto",
+        json.dumps([{"action": "buy", "code": "300750", "board": "电池"}]),
+        json.dumps(
+            {
+                "executed_buys": [{"code": "300750", "pnl_pct": 3.5, "correct": True}],
+                "summary": {"executed_count": 1, "executed_correct": 1},
+            }
+        ),
+        json.dumps({"verified_count": 2}),
+        json.dumps({"blocked_buy_count": 1}),
+        "🟡 震荡",
+        "测试分析",
+    )
+
+    class FakeConn:
+        def execute(self, *_args, **_kwargs):
+            return self
+
+        def fetchall(self):
+            return [row]
+
+        def close(self):
+            return None
+
+    import core.ai.context_builder as context_builder
+
+    original = context_builder.RepoCompatConnection
+    context_builder.RepoCompatConnection = FakeConn
+    try:
+        context = build_decision_history_context(limit=1)
+    finally:
+        context_builder.RepoCompatConnection = original
+
+    assert len(context["items"]) == 1
+    item = context["items"][0]
+    assert item["correct_ratio"] == 1.0
+    assert item["avg_pnl"] == 3.5
+    assert item["executed_count"] == 1
+
+
+def test_build_decision_reflection_filters_boards():
+    from core.ai.context_builder import build_decision_reflection_context
+
+    rows = [
+        (
+            "2025-11-03T10:00:00",
+            "auto",
+            json.dumps([{"action": "buy", "code": "300750", "board": "电池"}]),
+            json.dumps(
+                {
+                    "executed_buys": [{"code": "300750", "pnl_pct": -2.0, "correct": False}],
+                    "summary": {"executed_count": 1, "executed_correct": 0},
+                }
+            ),
+            "{}",
+            "{}",
+            "🔴 弱势",
+            "",
+        ),
+        (
+            "2025-11-02T10:00:00",
+            "auto",
+            json.dumps([{"action": "buy", "code": "300308", "board": "芯片"}]),
+            json.dumps(
+                {
+                    "executed_buys": [{"code": "300308", "pnl_pct": 5.0, "correct": True}],
+                    "summary": {"executed_count": 1, "executed_correct": 1},
+                }
+            ),
+            "{}",
+            "{}",
+            "🟢 强势",
+            "",
+        ),
+    ]
+
+    class FakeConn:
+        def execute(self, *_args, **_kwargs):
+            return self
+
+        def fetchall(self):
+            return rows
+
+        def close(self):
+            return None
+
+    import core.ai.context_builder as context_builder
+
+    original = context_builder.RepoCompatConnection
+    context_builder.RepoCompatConnection = FakeConn
+    try:
+        context = build_decision_reflection_context(boards=["电池"], limit=1)
+    finally:
+        context_builder.RepoCompatConnection = original
+
+    assert len(context["reflection_lines"]) == 1
+    assert "300750" not in context["reflection_lines"][0]
+    assert "执行1笔买入" in context["reflection_lines"][0]
+
+
+def test_multi_agent_cycle_passes_reflection_to_decide(monkeypatch):
+    import desktop.agents as agents
+
+    captured: dict = {}
+
+    def fake_decide(*args, **kwargs):
+        captured.update(kwargs)
+        return '{"analysis":"ok","decisions":[]}'
+
+    monkeypatch.setattr(
+        agents.IntelligenceAgent,
+        "gather",
+        staticmethod(lambda boards: {"market": {"total": 3, "up": 2, "down": 1}, "events": [], "boards": []}),
+    )
+    monkeypatch.setattr(
+        agents.AnalysisAgent,
+        "analyze",
+        staticmethod(lambda intel, boards, prefilled_candidates=None: {"market_regime": "🟡 震荡", "candidates": []}),
+    )
+    monkeypatch.setattr(
+        agents.VerificationAgent,
+        "verify",
+        staticmethod(lambda analysis: {"verified_candidates": [], "questionable_candidates": [], "rejected_candidates": []}),
+    )
+    monkeypatch.setattr(agents.DecisionAgent, "decide", staticmethod(fake_decide))
+    monkeypatch.setattr("desktop.ai_trader._build_portfolio_context", lambda mode: "portfolio context")
+    monkeypatch.setattr(
+        "core.ai.context_builder.build_decision_reflection_context_text",
+        lambda boards=None, limit=None: "== 历史决策反思（已校准）==\n  2025-11-03；测试反思",
+    )
+    monkeypatch.setattr(
+        "core.ai.context_builder.build_learning_feedback_context_text",
+        lambda: "== 学习反馈 ==\n策略权重已更新",
+    )
+
+    result = agents.run_multi_agent_cycle(
+        boards=["芯片"],
+        mode="auto",
+        execute=False,
+        persist_memory=False,
+    )
+
+    assert "reflection_context" in captured
+    assert "learning_context" in captured
+    assert "历史决策反思" in captured["reflection_context"]
+    assert "学习反馈" in captured["learning_context"]
+    assert "历史决策反思" in result.get("decision_reflection_context", "")
 
 
 def test_risk_agent_reports_warnings(monkeypatch):
@@ -1338,7 +1704,7 @@ def test_execute_sell_signals_across_modes_sells_matching_holdings(monkeypatch):
 def test_auto_sell_executes_sell_signals_for_strategy_portfolios(monkeypatch):
     import desktop.auto_sell as auto_sell
 
-    modes = ["full_auto", "auto", "custom", "quantum"]
+    modes = ["full_auto", "auto", "manual", "custom", "quantum"]
     monkeypatch.setattr(auto_sell, "update_atr_stops", lambda: [])
     monkeypatch.setattr(auto_sell, "check_add_position_signals", lambda mode="full_auto": [])
     monkeypatch.setattr(
@@ -1368,11 +1734,50 @@ def test_auto_sell_executes_sell_signals_for_strategy_portfolios(monkeypatch):
 
     result = auto_sell.execute_auto_sell()
 
-    assert len(result["executed"]) == 4
+    assert len(result["executed"]) == 5
     assert not result["suggested"]
     assert any("[auto] 卖出" in item for item in result["executed"])
+    assert any("[manual] 卖出" in item for item in result["executed"])
     assert any("[custom] 卖出" in item for item in result["executed"])
     assert any("[quantum] 卖出" in item for item in result["executed"])
+
+
+def test_ai_decision_execution_blocks_low_score_buys(monkeypatch):
+    import desktop.ai_trader as ai_trader
+
+    monkeypatch.setattr(
+        ai_trader,
+        "_lookup_candidate_meta",
+        lambda code: {
+            "score": 60,
+            "board": "人工智能",
+            "strategy_views": "SEPA趋势:看多 动量:中性",
+            "sepa_view": "看多",
+            "momentum_view": "中性",
+        },
+    )
+    monkeypatch.setattr(ai_trader, "_daily_trade_counts", lambda mode: (0, 0))
+    monkeypatch.setattr(
+        "desktop.market_state.get_market_state_snapshot",
+        lambda: {"state": "neutral", "sector_bottom3": [], "reason": ""},
+    )
+
+    result = ai_trader.execute_ai_decisions(
+        [
+            {
+                "action": "buy",
+                "code": "300001",
+                "name": "测试股",
+                "price": 10,
+                "shares": 100,
+                "score": 60,
+                "reason": "综合60分，测试买入",
+            }
+        ],
+        mode="auto",
+    )
+
+    assert result == ["风控拦截买入 300001: 综合评分60低于当前市场门槛80"]
 
 
 def test_audit_event_models_roundtrip():

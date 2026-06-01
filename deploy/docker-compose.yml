@@ -14,7 +14,7 @@ services:
       FINQUANTA_DB_BACKEND: postgres
       FINQUANTA_POSTGRES_DSN: postgresql://finquanta:finquanta@postgres:5432/finquanta
       FINQUANTA_REDIS_URL: redis://redis:6379/0
-      FINQUANTA_CORS_ORIGINS: "*"
+      FINQUANTA_CORS_ORIGINS: ${FINQUANTA_CORS_ORIGINS:-http://127.0.0.1:8501,http://localhost:8501,http://127.0.0.1:8080,http://localhost:8080}
       FINQUANTA_SNAPSHOT_CACHE_TTL: 120
     volumes:
       - ../data_cache:/app/data_cache

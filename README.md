@@ -13,6 +13,29 @@
 
 Web 端当前优先走 API，在 API 不可用时仍保留本地兼容回退，作为渐进式服务化过渡方案。
 
+## 入口与调度权威
+
+推荐把生产入口收敛为一套明确组合：
+
+| 场景 | 推荐入口 | 说明 |
+|------|----------|------|
+| 桌面本地 | `python run_desktop.py` | 人工操作与确认 |
+| API / 平台 | `uvicorn api_server.main:app …` + `FINQUANTA_API_AUTOSTART_DAEMON=1` | API 托管 daemon |
+| Windows 计划任务 | `install_daemon_task.bat` | **与 API autostart 二选一**，勿双开 |
+
+- 桌面本地使用 `python run_desktop.py`，适合单机操作与人工确认。
+- 平台/API 使用 `python -m uvicorn api_server.main:app --host 0.0.0.0 --port 9000`，并通过 `FINQUANTA_API_AUTOSTART_DAEMON=1` 让 API 托管 daemon。
+- Windows 计划任务仅用于本机无人值守场景；若已经由 API 常驻托管 daemon，请设 `FINQUANTA_API_AUTOSTART_DAEMON=0`，避免重复实例（第二实例会跳过并在 `kv_store.daemon_skip_reason` 留痕）。
+
+### 扫描数据契约（P0）
+
+- **`last_scan_results`**：选股雷达 / daemon 10:05 扫描写入，供 AI、自定义仓、OpenClaw 读取。
+- **`last_scan_results_meta`**：记录 `source`（`daemon` / `ui`）、`strategy_id`、写入时间。
+- **`FINQUANTA_AI_SCAN_SOURCE`**：`latest`（默认）| `daemon` | `ui` | `resonance` — AI 仓与自定义仓 Top3 消费规则。
+- **策略竞技场**使用 `arena_snapshot_{date}`，**不会覆盖** `last_scan_results`。
+
+AI 决策一次性计划任务的时间由 `FINQUANTA_AI_SCHEDULER_MORNING_TIME` 和 `FINQUANTA_AI_SCHEDULER_AFTERNOON_TIME` 控制，`desktop.auto_scheduler` 与 `install_scheduler.bat` 共用同一组默认值。
+
 ## 文档
 
 - [系统介绍](doc/FinQuanta_系统介绍文档.md)
@@ -89,6 +112,7 @@ python infra/check_openclaw_gateway.py --strict
 - `FINQUANTA_AUTH_FAILED_AUTH_THRESHOLD`：最近认证失败告警阈值（默认 5）
 - `FINQUANTA_API_AUTOSTART_DAEMON`：API 启动时是否自动拉起后台 daemon（默认 1）。API 进程常驻后，工作日会按调度表自动执行任务。
 - `FINQUANTA_DAEMON_BOARDS`：daemon 默认关注板块，逗号分隔（如 `人工智能,芯片,量子科技`）。10:25 会触发 `OpenClaw自主全流程`，无需打开桌面客户端。
+- `FINQUANTA_AI_SCHEDULER_MORNING_TIME` / `FINQUANTA_AI_SCHEDULER_AFTERNOON_TIME`：AI 决策一次性计划任务时间（默认 `10:15` / `14:00`），供 `desktop.auto_scheduler` 与 `install_scheduler.bat` 使用。
 - `FINQUANTA_ALERT_APPROVAL_REJECTED_THRESHOLD`：审批拒绝次数告警阈值（默认 5）
 - `FINQUANTA_ALERT_APPROVAL_DURATION_MS_THRESHOLD`：审批耗时最大值告警阈值 ms（默认 3000）
 - `FINQUANTA_ALERT_EVENT_ERROR_THRESHOLD`：事件 error 总量告警阈值（默认 10）

@@ -47,6 +47,11 @@ class AIPortfolioPanel(QWidget):
         self.ai_config_label.setStyleSheet("color:#8b949e; font-size:12px; padding:2px 0;")
         layout.addWidget(self.ai_config_label)
 
+        self.scan_meta_label = QLabel("选股池：加载中...")
+        self.scan_meta_label.setStyleSheet("color:#8b949e; font-size:12px; padding:0 0 6px 0;")
+        self.scan_meta_label.setWordWrap(True)
+        layout.addWidget(self.scan_meta_label)
+
         # 兼容旧引用（隐藏的虚拟控件）
         self.provider_combo = QComboBox(); self.provider_combo.setVisible(False)
         self.model_combo = QComboBox(); self.model_combo.setVisible(False)
@@ -215,6 +220,22 @@ class AIPortfolioPanel(QWidget):
     def get_selected_boards(self) -> list[str]:
         return [bn for bn, cb in self._board_checkboxes.items() if cb.isChecked()]
 
+    def update_scan_meta(
+        self,
+        meta: dict | None = None,
+        *,
+        count: int | None = None,
+        warning: str | None = None,
+    ):
+        from desktop.scan_store import format_scan_meta_summary
+
+        text = format_scan_meta_summary(meta, count=count, warning=warning)
+        color = "#ef5350" if warning else "#8b949e"
+        self.scan_meta_label.setText(text)
+        self.scan_meta_label.setStyleSheet(
+            f"color:{color}; font-size:12px; padding:0 0 6px 0;"
+        )
+
     def _on_provider_changed(self, provider: str):
         cfg = self._PROVIDER_CONFIG.get(provider, self._PROVIDER_CONFIG["自定义"])
         self.model_combo.clear()
@@ -230,10 +251,16 @@ class AIPortfolioPanel(QWidget):
         comp_box = QGroupBox("📊 双仓对比")
         cg = QGridLayout(comp_box)
         cg.addWidget(QLabel(""), 0, 0)
-        for j, h in enumerate(["总资产", "收益率", "已平仓胜率", "浮盈占比", "交易数", "总盈亏"]):
+        _header_tooltips = {
+            "平仓胜率": "只统计已平仓交易中，盈利交易占全部已平仓交易的比例。",
+            "浮盈占比": "当前仍持有的仓位里，处于浮盈状态的持仓占比。",
+        }
+        for j, h in enumerate(["总资产", "收益率", "平仓胜率", "浮盈占比", "交易数", "盈亏"]):
             lbl = QLabel(h)
             lbl.setFont(QFont("", 10, QFont.Weight.Bold))
             lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            if h in _header_tooltips:
+                lbl.setToolTip(_header_tooltips[h])
             cg.addWidget(lbl, 0, j + 1)
         for i, mode_label in enumerate(["🟣 完全自主仓(AI全权)", "🔵 AI推荐仓(AI+确认)", "📌 自定义仓(Top3)", "⚛️ 量子仓(QAOA/QA)"]):
             lbl = QLabel(mode_label)

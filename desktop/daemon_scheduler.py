@@ -26,6 +26,7 @@ import threading
 from datetime import datetime, date, timedelta
 
 from desktop.data_access import get_kv_json, get_repo, set_kv_json
+from desktop.scan_store import resolve_scan_results
 from desktop.task_orchestrator import log_system_event, run_task
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -65,6 +66,7 @@ SCHEDULE = [
     {"time": "10:10", "key": "short_term",    "name": "短期选股+NLP",     "func": "_task_short_term"},
     {"time": "10:12", "key": "custom_top3",   "name": "自定义仓Top3买入", "func": "_task_custom_top3"},
     {"time": "10:15", "key": "ai_decision",   "name": "四仓决策(上午)",    "func": "_task_ai_decision"},
+    {"time": "10:17", "key": "arena_cycle_am",  "name": "策略竞技场(上午)",  "func": "_task_arena_cycle"},
     {"time": "10:18", "key": "auto_sell",    "name": "自动卖出检查(上午)", "func": "_task_auto_sell"},
     {"time": "10:20", "key": "quantum_buy",   "name": "量子仓优化(周一)",  "func": "_task_quantum_buy"},
     {"time": "10:25", "key": "openclaw_pipeline", "name": "OpenClaw自主全流程", "func": "_task_openclaw_pipeline"},
@@ -80,6 +82,7 @@ SCHEDULE = [
     {"time": "13:30", "key": "refresh_kline", "name": "刷新K线日线(下午)", "func": "_task_refresh_kline"},
     {"time": "14:00", "key": "fetch_data",    "name": "刷新实时行情(14:00)","func": "_task_fetch_data"},
     {"time": "14:00", "key": "ai_decision",   "name": "四仓决策(下午)",    "func": "_task_ai_decision"},
+    {"time": "14:03", "key": "arena_cycle_pm",  "name": "策略竞技场(下午)",  "func": "_task_arena_cycle"},
     {"time": "14:05", "key": "auto_sell",    "name": "自动卖出检查(下午)", "func": "_task_auto_sell"},
     {"time": "14:00", "key": "watchlist_scan","name": "关注股异常(14:00)", "func": "_task_watchlist_scan"},
     {"time": "14:30", "key": "risk_calc",     "name": "风险计算(14:30)",   "func": "_task_risk_calc"},
@@ -242,6 +245,13 @@ class DaemonScheduler:
             self._time_overrides = raw if isinstance(raw, dict) else {}
         except Exception:
             self._time_overrides = {}
+        try:
+            from core.config.scheduler import get_arena_scheduler_settings
+            ar = get_arena_scheduler_settings()
+            self._time_overrides.setdefault("arena_cycle_am", ar.morning_time)
+            self._time_overrides.setdefault("arena_cycle_pm", ar.afternoon_time)
+        except Exception:
+            pass
 
     def _get_task_time(self, task: dict) -> str:
         key = task.get("key", "")
@@ -249,13 +259,12 @@ class DaemonScheduler:
         return override or task.get("time", "")
 
     def _is_trading_day(self) -> bool:
-        d = date.today()
-        if d.weekday() >= 5:
-            return False
         try:
-            from desktop.ai_portfolio import _CN_HOLIDAYS
-            return d not in _CN_HOLIDAYS
+            from desktop.ai_portfolio import is_trading_day
+
+            return bool(is_trading_day(date.today()))
         except Exception:
+            d = date.today()
             return d.weekday() < 5
 
     def _push(self, title: str, content: str, channels: list[str] | None = None):
@@ -720,7 +729,9 @@ class DaemonScheduler:
             results.sort(key=lambda x: int(x.get("评分", "0")), reverse=True)
             results = results[:50]
 
-            set_kv_json("last_scan_results", results)
+            from desktop.scan_store import save_scan_results
+
+            save_scan_results(results, source="daemon", strategy_id=current_strategy)
 
             n_r = len(results)
             top3 = ", ".join(f"{r['代码']}({r['评分']})" for r in results[:3])
@@ -744,7 +755,7 @@ class DaemonScheduler:
         """扫描后自动推送强烈买入信号到微信。"""
         _log.info("pushing strong buy signals...")
         try:
-            candidates = get_kv_json("last_scan_results", None)
+            candidates = resolve_scan_results()[0]
             if not candidates:
                 return
             if not isinstance(candidates, list):
@@ -788,7 +799,7 @@ class DaemonScheduler:
             from desktop.quantum.config import QOptConfig
             from desktop.quantum.evaluation import run_full_comparison
             repo = get_repo()
-            scan = get_kv_json("last_scan_results", None)
+            scan = resolve_scan_results()[0]
             if not scan or not isinstance(scan, list):
                 return
             codes = [s.get("代码", "") for s in scan[:40] if s.get("代码")]
@@ -954,6 +965,26 @@ class DaemonScheduler:
                 _log.warning(f"system snapshot skipped after ai decision: {e}")
         except Exception as e:
             _log.error(f"ai decision error: {e}")
+
+    def _task_arena_cycle(self):
+        """策略竞技场：19 种策略共享快照后自动跑一轮。"""
+        try:
+            from core.config.scheduler import get_arena_scheduler_settings
+
+            if not get_arena_scheduler_settings().enabled:
+                _log.info("arena cycle skipped: scheduler disabled")
+                return
+        except Exception:
+            pass
+        _log.info("running arena cycle...")
+        try:
+            from desktop.arena.scheduler_hooks import run_arena_scheduled
+
+            result = run_arena_scheduled(boards=self.boards)
+            leader = (result.get("leaderboard") or {}).get("leader", "")
+            _log.info("arena cycle done: leader=%s", leader)
+        except Exception as e:
+            _log.error(f"arena cycle error: {e}")
 
     def _task_risk_calc(self):
         """计算全仓组合风险指标并保存到 kv_store，供总览页使用。"""
@@ -1477,7 +1508,13 @@ class DaemonScheduler:
             alerted_today = set(self._last_run.get(alerted_key, []))
 
             alerts = []
-            for mode, label in [("full_auto", "完全自主"), ("auto", "AI推荐"), ("custom", "自定义")]:
+            for mode, label in [
+                ("full_auto", "完全自主"),
+                ("auto", "AI推荐"),
+                ("manual", "AI推荐"),
+                ("custom", "自定义"),
+                ("quantum", "量子"),
+            ]:
                 state = get_state(mode)
                 codes = [p["code"] for p in state["positions"]]
                 if not codes:
@@ -1525,7 +1562,20 @@ class DaemonScheduler:
     def run(self):
         """主循环：每分钟检查调度表 + 定期检查预警。"""
         if not self._acquire_leader():
-            _log.warning("daemon skipped: another scheduler instance is active")
+            dup = get_kv_json(_DAEMON_DUPLICATE_KEY, {}) or {}
+            skip_payload = {
+                "reason": "another scheduler instance is active",
+                "holder_pid": dup.get("holder_pid") if isinstance(dup, dict) else None,
+                "detected_at": dup.get("detected_at") if isinstance(dup, dict) else None,
+                "candidate_pid": os.getpid(),
+                "skipped_at": datetime.now().isoformat(timespec="seconds"),
+            }
+            set_kv_json("daemon_skip_reason", skip_payload)
+            _log.warning(
+                "daemon skipped: another scheduler instance is active "
+                "(see kv_store.daemon_skip_reason, holder_pid=%s)",
+                skip_payload.get("holder_pid"),
+            )
             return
         _log.info(f"FinQuanta Daemon started, boards: {self.boards}")
         last_alert = 0

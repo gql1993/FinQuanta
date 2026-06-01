@@ -1,6 +1,6 @@
 @echo off
-echo 卸载定时任务...
-schtasks /delete /tn "AI量化_10点决策" /f 2>nul
-schtasks /delete /tn "AI量化_14点决策" /f 2>nul
-echo 已卸载。
-pause
+echo Uninstalling FinQuanta AI scheduler tasks...
+schtasks /delete /tn "FinQuantaAiDecisionMorning" /f 2>nul
+schtasks /delete /tn "FinQuantaAiDecisionAfternoon" /f 2>nul
+echo Done.
+exit /b 0
