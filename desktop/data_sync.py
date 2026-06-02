@@ -16,6 +16,63 @@ from desktop.data_access import (
 )
 
 
+def _to_float(value, default: float | None = None) -> float | None:
+    try:
+        if value in (None, "", "-", "--", "nan", "None"):
+            return default
+        text = str(value).replace(",", "").replace("%", "").strip()
+        if not text:
+            return default
+        return float(text)
+    except Exception:
+        return default
+
+
+def sync_financial_csv_to_db(path: str | None = None) -> dict:
+    """Sync data_cache/financial.csv into the financial table."""
+    import csv
+
+    csv_path = path or os.path.join("data_cache", "financial.csv")
+    result = {"financial": 0, "path": csv_path, "missing": False}
+    if not os.path.exists(csv_path):
+        result["missing"] = True
+        return result
+
+    rows: list[tuple] = []
+    with open(csv_path, "r", encoding="utf-8-sig") as f:
+        reader = csv.DictReader(f)
+        for r in reader:
+            code = str(
+                r.get("code")
+                or r.get("代码")
+                or r.get("股票代码")
+                or r.get("SECURITY_CODE")
+                or ""
+            ).strip()
+            if "." in code:
+                code = code.split(".")[0]
+            code = code.zfill(6) if code.isdigit() and len(code) < 6 else code
+            if not (code.isdigit() and len(code) == 6):
+                continue
+            name = str(r.get("name") or r.get("名称") or r.get("股票简称") or r.get("SECURITY_NAME_ABBR") or "")
+            pe = _to_float(r.get("pe_dynamic") or r.get("动态市盈率") or r.get("市盈率") or r.get("PE"))
+            pb = _to_float(r.get("pb") or r.get("市净率") or r.get("PB"))
+            total_mv = _to_float(r.get("total_mv") or r.get("总市值") or r.get("TOTAL_MARKET_CAP"))
+            circ_mv = _to_float(r.get("circ_mv") or r.get("流通市值") or r.get("CIRC_MARKET_CAP"))
+            rows.append((code, name, pe, pb, total_mv, circ_mv, datetime.now().isoformat()))
+
+    if rows:
+        repo = get_repo()
+        repo.executemany(
+            "INSERT OR REPLACE INTO financial "
+            "(code, name, pe_dynamic, pb, total_mv, circ_mv, updated_at) "
+            "VALUES (?,?,?,?,?,?,?)",
+            rows,
+        )
+    result["financial"] = len(rows)
+    return result
+
+
 def get_missing_codes(board_codes: list[str]) -> list[str]:
     """找出板块中没有日线数据的股票代码。"""
     repo = get_repo()
@@ -82,6 +139,41 @@ def fetch_daily_tencent(code: str) -> list[tuple]:
         return result
     except Exception:
         return []
+
+
+def collect_kline_refresh_codes(repo=None) -> list[str]:
+    """Collect stock codes for scheduled K-line refresh (positions first, then board universe)."""
+    from desktop.data_access import get_kv_json
+
+    repo = repo or get_repo()
+    priority_codes: list[str] = []
+    seen: set[str] = set()
+
+    def _add(code: str):
+        c = str(code or "").strip()
+        if len(c) == 6 and c.isdigit() and c not in seen:
+            seen.add(c)
+            priority_codes.append(c)
+
+    try:
+        for r in repo.fetchall(
+            "SELECT DISTINCT code FROM ai_positions WHERE status='open'", ()
+        ):
+            _add(r[0])
+    except Exception:
+        pass
+    try:
+        mp = get_kv_json("manual_portfolio", {}) or {}
+        for p in mp.get("positions", []):
+            _add(p.get("code", ""))
+    except Exception:
+        pass
+    try:
+        for r in repo.fetchall("SELECT DISTINCT code FROM board_stocks", ()):
+            _add(r[0])
+    except Exception:
+        pass
+    return priority_codes
 
 
 def refresh_latest_kline(codes: list[str] = None, max_codes: int = 500,
@@ -244,7 +336,7 @@ def sync_board_stocks(board_name: str = None, max_fetch: int = 50,
 def sync_csv_to_db() -> dict:
     """将本地 CSV/JSON 缓存同步到数据库（启动时调用）。"""
     cache = "data_cache"
-    result = {"daily": 0, "stocks": 0, "boards": 0}
+    result = {"daily": 0, "stocks": 0, "boards": 0, "financial": 0}
 
     repo = get_repo()
     sl_path = os.path.join(cache, "stock_list.csv")
@@ -283,6 +375,12 @@ def sync_csv_to_db() -> dict:
                 set_kv_json("manual_portfolio", pf)
         except Exception:
             pass
+
+    try:
+        fin = sync_financial_csv_to_db(os.path.join(cache, "financial.csv"))
+        result["financial"] = int(fin.get("financial", 0) or 0)
+    except Exception:
+        pass
 
     return result
 

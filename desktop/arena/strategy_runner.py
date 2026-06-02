@@ -15,6 +15,8 @@ from strategy_profiles import (
     strategy_name,
 )
 
+from desktop.arena.strategy_signals import evaluate_strategy_signals, ohlcv_dataframe
+
 _log = logging.getLogger("arena.strategy_runner")
 
 _MIN_BARS = 50
@@ -87,6 +89,18 @@ def scan_with_strategy(strategy_id: str, *, limit: int = 50) -> list[dict]:
         if r[0] not in board_map:
             board_map[r[0]] = r[1]
 
+    market_regime = None
+    if sid == "sepa":
+        from desktop.arena.market_regime import assess_market_regime
+
+        market_regime = assess_market_regime(repo)
+        if not market_regime.get("sepa_market_ok", True):
+            _log.info(
+                "SEPA scan skipped: market filter blocked (%s)",
+                market_regime.get("block_reason") or market_regime.get("reason"),
+            )
+            return []
+
     results: list[dict] = []
     for code in codes:
         rows = repo.fetchall(
@@ -107,10 +121,20 @@ def scan_with_strategy(strategy_id: str, *, limit: int = 50) -> list[dict]:
         ctx = build_context(code, closes, highs, lows, vols)
         base = _build_base_row(code, ctx, names, board_map)
         df = _kline_to_df(closes, highs, lows, vols)
+        ohlcv = ohlcv_dataframe(closes, highs, lows, vols)
         try:
             row = apply_screening_profile(base, df, sid, None, params)
         except Exception as exc:
             _log.debug("profile scan skip %s %s: %s", sid, code, exc)
+            continue
+
+        if sid == "sepa":
+            from desktop.arena.sepa_rules import evaluate_sepa_buy
+
+            sig = evaluate_sepa_buy(code, ohlcv, params, market_regime=market_regime)
+        else:
+            sig = evaluate_strategy_signals(code, sid, df=ohlcv)
+        if not sig.get("buy_signal"):
             continue
 
         try:
@@ -122,6 +146,8 @@ def scan_with_strategy(strategy_id: str, *, limit: int = 50) -> list[dict]:
 
         row["策略"] = strategy_name(sid)
         row["strategy_id"] = sid
+        row["buy_signal"] = True
+        row["strategy_entry_reason"] = sig.get("strategy_entry_reason", "")
         row["评分"] = str(int(score)) if score == int(score) else str(round(score, 1))
         row["价格"] = f"{float(row.get('价格', ctx.price)):.2f}"
         results.append(row)
@@ -142,12 +168,14 @@ def buy_strategy_top(
     from desktop.ai_trader import _calc_atr_stop
 
     if not candidates:
-        return [f"[{mode}] 无候选股"]
+        return [f"[{mode}] 策略无买入信号（今日不满足入场规则）"]
 
     state = get_state(mode)
     existing = {p["code"] for p in state.get("positions", [])}
     results: list[str] = []
     bought = 0
+
+    strategy_id = mode[len("arena_") :] if mode.startswith("arena_") else ""
 
     for item in candidates:
         if bought >= top_n:
@@ -156,18 +184,26 @@ def buy_strategy_top(
         if not code or code in existing:
             continue
 
-        board = str(item.get("板块", "") or "")
-        if board:
-            try:
-                from desktop.ai_trader import _WEAK_BOARD_5D_THRESHOLD
-                from desktop.arena.loss_analysis import get_board_return_window
+        if strategy_id:
+            sig = evaluate_strategy_signals(code, strategy_id)
+            if not sig.get("buy_signal"):
+                results.append(
+                    f"[{mode}] 跳过 {code}: 策略入场条件未满足"
+                )
+                continue
+        else:
+            board = str(item.get("板块", "") or "")
+            if board:
+                try:
+                    from desktop.ai_trader import _WEAK_BOARD_5D_THRESHOLD
+                    from desktop.arena.loss_analysis import get_board_return_window
 
-                board_5d = get_board_return_window(board)
-                if board_5d is not None and board_5d <= _WEAK_BOARD_5D_THRESHOLD:
-                    results.append(f"[{mode}] 跳过 {code}: 板块[{board}]近5日{board_5d:+.1f}%未上涨")
-                    continue
-            except Exception:
-                pass
+                    board_5d = get_board_return_window(board)
+                    if board_5d is not None and board_5d <= _WEAK_BOARD_5D_THRESHOLD:
+                        results.append(f"[{mode}] 跳过 {code}: 板块[{board}]近5日{board_5d:+.1f}%未上涨")
+                        continue
+                except Exception:
+                    pass
 
         try:
             price = float(str(item.get("价格", "0")).replace(",", ""))
@@ -185,11 +221,28 @@ def buy_strategy_top(
         except Exception:
             pass
 
+        if strategy_id == "sepa":
+            from desktop.arena.sepa_rules import sepa_initial_stop_loss
+
+            stop_loss = sepa_initial_stop_loss(price)
+        else:
+            stop_loss = _calc_atr_stop(code, price)
+        risk_shares = 0
+        if strategy_id and stop_loss > 0 and stop_loss < price:
+            from risk_manager import RiskManager
+
+            capital = float(state.get("initial_capital", 0) or state.get("cash", 0) or 0)
+            risk_shares = RiskManager().calculate_position_size(capital, price, stop_loss)
+
         slots_left = max(1, 10 - len(state.get("positions", [])))
         available = state["cash"]
         per_stock = available / max(slots_left, 1)
-        shares = int(per_stock / price / 100) * 100
+        cash_shares = int(per_stock / price / 100) * 100
+        shares = min(cash_shares, risk_shares) if strategy_id and risk_shares > 0 else cash_shares
         if shares < 100:
+            if strategy_id and risk_shares > 0 and risk_shares < 100:
+                results.append(f"[{mode}] 跳过 {code}: 单笔风险额度不足买入100股")
+                continue
             if available < price * 100 * 1.0003:
                 results.append(f"[{mode}] 资金不足买入 {code}")
                 continue
@@ -198,7 +251,12 @@ def buy_strategy_top(
         name = str(item.get("名称", code) or code)
         score = item.get("评分", "")
         strategy_label = item.get("策略", item.get("strategy_id", ""))
-        stop_loss = _calc_atr_stop(code, price)
+        entry_reason = str(item.get("strategy_entry_reason", "") or "").strip()
+        reason_bits = [reason_prefix, strategy_label, f"评分{score}"]
+        if entry_reason:
+            reason_bits.append(entry_reason)
+        if strategy_id and risk_shares:
+            reason_bits.append("风险定仓")
         msg = buy(
             mode,
             code,
@@ -206,7 +264,7 @@ def buy_strategy_top(
             price,
             shares,
             stop_loss,
-            f"{reason_prefix} {strategy_label} 评分{score}",
+            " ".join(str(x) for x in reason_bits if x),
         )
         results.append(msg)
         existing.add(code)
@@ -214,5 +272,5 @@ def buy_strategy_top(
         state = get_state(mode)
 
     if bought == 0 and not results:
-        results.append(f"[{mode}] 无新增买入（均已持有或无合适候选）")
+        results.append(f"[{mode}] 无新增买入（无信号或均已持有）")
     return results

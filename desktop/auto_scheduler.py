@@ -70,7 +70,22 @@ def _set_last_run(ts: str):
 
 
 def run_scheduled_task(board: str = "人工智能", boards: list = None) -> dict:
-    """执行一次定时任务：四仓决策 + 推送。"""
+    """执行一次定时任务：四仓决策 + 推送（legacy，默认已停用）。"""
+    from core.config.legacy_ai import get_legacy_ai_warehouse_settings
+
+    if not get_legacy_ai_warehouse_settings().enabled:
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        _log.info("legacy AI scheduler skipped: FINQUANTA_LEGACY_AI_WAREHOUSES=0")
+        return {
+            "time": ts,
+            "skipped": True,
+            "message": "四 AI 仓已停用，请使用策略竞技场",
+            "full_auto_results": [],
+            "auto_results": [],
+            "manual_suggestions": [],
+            "pushed": False,
+        }
+
     from desktop.ai_trader import run_ai_decision, run_auto_cycle, run_full_auto_cycle
 
     if not boards:
@@ -183,6 +198,11 @@ def _build_push_message(results: dict) -> str:
 
 def check_and_run(board: str = "人工智能", boards: list = None) -> dict | None:
     """检查是否到了定时任务时间，如果到了就执行。"""
+    from core.config.legacy_ai import get_legacy_ai_warehouse_settings
+
+    if not get_legacy_ai_warehouse_settings().enabled:
+        return None
+
     if not _should_run_today():
         return None
 

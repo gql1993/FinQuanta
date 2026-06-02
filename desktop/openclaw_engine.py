@@ -537,23 +537,6 @@ def run_full_pipeline(boards: list[str] = None, callback=None) -> dict:
         except Exception:
             pass
 
-        board_map = {}
-        try:
-            for r in repo.fetchall("SELECT code, board FROM board_stocks", ()):
-                if r[0] not in board_map:
-                    board_map[r[0]] = r[1]
-        except Exception:
-            pass
-
-        # 加载学习权重
-        strategy_weights = {}
-        try:
-            from desktop.openclaw_learner import get_strategy_weights
-            strategy_weights = get_strategy_weights()
-        except Exception:
-            pass
-        sepa_w = strategy_weights.get("SEPA", {}).get("weight", 1.0)
-
         # 因子研究模块
         factor_scores = {}
         try:
@@ -579,66 +562,25 @@ def run_full_pipeline(boards: list[str] = None, callback=None) -> dict:
         except Exception:
             pass
 
-        from desktop.strategy_engine import build_context, score_candidate
-        from desktop.strategy_rotator import get_current_best_strategy
-        current_strategy = get_current_best_strategy()
+        from desktop.radar_scan import candidates_from_arena_snapshot, candidates_from_scan_rows
+        from desktop.scan_store import resolve_scan_results
 
-        candidates = []
-        for code in codes:
-            rows = repo.fetchall(
-                "SELECT close, high, low, volume FROM daily_kline "
-                "WHERE code=? ORDER BY date DESC LIMIT 260", (code,)
-            )
-            if len(rows) < 50:
-                continue
-            rows = rows[::-1]
-            closes = np.array([r[0] for r in rows])
-            highs = np.array([r[1] for r in rows])
-            n = len(closes)
-            p = float(closes[-1])
-            if p <= 0:
-                continue
+        scan_rows, _, _ = resolve_scan_results()
+        candidates = candidates_from_scan_rows(scan_rows)
+        source_note = "ui/daemon scan pool"
 
-            ctx = build_context(code, closes, highs, lows, vols)
-            scored = score_candidate(current_strategy, ctx)
-            score = scored["score"]
+        if not candidates:
+            candidates = candidates_from_arena_snapshot(per_strategy_top=3)
+            source_note = "arena snapshot (19 strategies)"
 
-            # 因子加分
-            fs = factor_scores.get(code, {})
-            if fs.get("momentum_20d", 0) > 5:
-                score += 5
-            if fs.get("volatility_20d", 999) < 0.03:
-                score += 5
-
-            # 学习权重加成
-            score = int(score * sepa_w)
-
-            if score >= 40:
-                candidates.append({
-                    "code": code, "name": names.get(code, code),
-                    "score": score, "price": round(p, 2),
-                    "board": board_map.get(code, ""),
-                    "momentum_1m": round((p / closes[-22] - 1) * 100, 2) if n >= 22 else 0,
-                    "volatility": round(float(np.std(closes[-20:]) / np.mean(closes[-20:]) * 100), 2) if n >= 20 else 0,
-                    "strategy": scored["strategy"],
-                })
-
-        candidates.sort(key=lambda x: x["score"], reverse=True)
         results["candidates"] = candidates[:30]
+        if not candidates:
+            return "0只候选(请先 UI 扫描或等待竞技场快照)"
 
-        set_kv_json(
-            "last_scan_results",
-            [
-                {"代码": c["code"], "名称": c["name"], "评分": str(c["score"]),
-                 "价格": str(c["price"]), "板块": c.get("board", ""),
-                 "建议买入": "强烈买入" if c["score"] >= 70 else "建议买入",
-                }
-                for c in candidates[:50]
-            ],
+        return (
+            f"{len(candidates)}只候选({source_note}) "
+            f"Top3: {', '.join(c['code'] for c in candidates[:3])}"
         )
-        n_factor = len(factor_scores)
-        return (f"{len(candidates)}只候选(因子{n_factor}只) "
-                f"Top3: {', '.join(c['code'] for c in candidates[:3])}")
 
     # ═══ S3: 多智能体协同研判 ═══
     def _s3():

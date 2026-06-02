@@ -657,18 +657,18 @@ def build_strategy_weights_context(top_limit: int | None = None) -> dict[str, An
 
 
 def build_rotation_context() -> dict[str, Any]:
-    """Return structured strategy/sector rotation context."""
-    context = {
-        "strategy_rotation": {},
+    """Return structured sector rotation + arena leaderboard snapshot (informational)."""
+    context: dict[str, Any] = {
         "sector_rotation": {},
+        "arena_leaderboard": {},
     }
     try:
+        from desktop.data_access import get_kv_json
+
+        board = get_kv_json("arena_leaderboard_latest", {})
+        if isinstance(board, dict):
+            context["arena_leaderboard"] = board
         conn = RepoCompatConnection()
-        strategy_row = conn.execute(
-            "SELECT value FROM kv_store WHERE key='strategy_rotation'"
-        ).fetchone()
-        if strategy_row:
-            context["strategy_rotation"] = json.loads(strategy_row[0])
         sector_row = conn.execute(
             "SELECT value FROM kv_store WHERE key='sector_rotation'"
         ).fetchone()
@@ -1002,16 +1002,19 @@ def build_decision_memory_context_text(
 
 
 def build_rotation_context_text() -> str:
-    """Render strategy/sector rotation context."""
+    """Render sector rotation + arena leaderboard (no single main strategy)."""
     context = build_rotation_context()
     rotation_text = ""
-    strategy_rotation = context.get("strategy_rotation", {})
-    if strategy_rotation:
-        rotation_text += (
-            "\n== 策略轮动 ==\n"
-            f"当前最强策略: {strategy_rotation.get('best_name', 'SEPA')}"
-            f"(综合分{strategy_rotation.get('best_score', 0):.0f})\n"
-        )
+    board = context.get("arena_leaderboard") or {}
+    rows = board.get("rows") or []
+    if rows:
+        rotation_text += "\n== 策略竞技场（19 路并行，无系统主策略） ==\n"
+        for row in rows[:3]:
+            rotation_text += (
+                f"{row.get('rank')}. {row.get('display_name')} "
+                f"收益{float(row.get('return_pct', 0) or 0):+.1f}% "
+                f"综合{float(row.get('composite_score', 0) or 0):.1f}\n"
+            )
     sector_rotation = context.get("sector_rotation", {})
     top3 = sector_rotation.get("top3", [])
     if top3:

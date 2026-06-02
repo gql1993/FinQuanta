@@ -42,8 +42,8 @@ class DashboardPanel(QWidget):
 
         # 六仓合计摘要卡片（一行）
         metrics_layout = QHBoxLayout()
-        self.card_equity = MetricCard("总资产(6仓)")
-        self.card_pnl = MetricCard("浮动盈亏(6仓)")
+        self.card_equity = MetricCard("总资产(手动+竞技场)")
+        self.card_pnl = MetricCard("浮动盈亏(手动+竞技场)")
         self.card_today = MetricCard("当日盈亏")
         self.card_positions = MetricCard("总持仓数")
         self.card_cash = MetricCard("总可用现金")
@@ -95,8 +95,8 @@ class DashboardPanel(QWidget):
             self.risk_labels[key] = val_lbl
         layout.addWidget(risk_group)
 
-        # 六仓摘要对比（手动仓 + 5 个 AI 仓）
-        comp_group = QGroupBox("六仓持仓摘要")
+        # 持仓摘要（方案 A：手动仓 + 竞技场合计 + 榜 Top4）
+        comp_group = QGroupBox("持仓摘要（手动仓 + 策略竞技场）")
         cg = QGridLayout(comp_group)
         cg.setSpacing(6)
         _headers = ["总资产", "浮动盈亏", "收益率", "持仓数", "可用现金", "平仓胜率", "浮盈占比", "交易数", "盈亏"]
@@ -112,16 +112,22 @@ class DashboardPanel(QWidget):
             if h in _header_tooltips:
                 lbl.setToolTip(_header_tooltips[h])
             cg.addWidget(lbl, 0, j + 1)
+        self.dash_row_labels: list[QLabel] = []
         _mode_labels = [
             "💼 手动仓",
-            "🟣 完全自主仓", "🔵 AI推荐仓", "📌 自定义仓", "⚛️ 量子仓",
+            "🏆 竞技场合计",
+            "🥇 榜第1",
+            "🥈 榜第2",
+            "🥉 榜第3",
+            "4️⃣ 榜第4",
         ]
         for i, ml in enumerate(_mode_labels):
             lbl = QLabel(ml)
             lbl.setFont(QFont("", 10, QFont.Weight.Bold))
             cg.addWidget(lbl, i + 1, 0)
+            self.dash_row_labels.append(lbl)
         self.dash_comp_labels = {}
-        for i in range(5):
+        for i in range(6):
             for j in range(len(_headers)):
                 lbl = QLabel("-")
                 lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -136,8 +142,8 @@ class DashboardPanel(QWidget):
 
         layout.addStretch()
 
-    def update_metrics(self, manual_summary: dict, comp: dict = None):
-        """更新六仓合计摘要卡片。"""
+    def update_metrics(self, manual_summary: dict, comp: dict = None, arena_agg: dict | None = None):
+        """更新合计摘要卡片。"""
         m_eq = manual_summary.get("total_equity", 0)
         m_pnl = manual_summary.get("unrealized_pnl", 0)
         m_today = manual_summary.get("today_pnl", 0)
@@ -148,21 +154,30 @@ class DashboardPanel(QWidget):
         total_pnl = m_pnl
         total_pos = m_pos
         total_cash = m_cash
-        if comp:
+        initial_all = float(manual_summary.get("initial_capital", 1_000_000) or 1_000_000)
+
+        if arena_agg is not None:
+            total_eq += float(arena_agg.get("equity", 0) or 0)
+            total_pnl += float(arena_agg.get("unrealized_pnl", arena_agg.get("total_pnl", 0)) or 0)
+            total_pos += int(arena_agg.get("positions", 0) or 0)
+            total_cash += float(arena_agg.get("cash", 0) or 0)
+            initial_all += 19_000_000.0
+        elif comp:
             for mode in ["full_auto", "auto", "custom", "quantum"]:
                 c = comp.get(mode, {})
                 total_eq += c.get("equity", 0)
                 total_pnl += c.get("unrealized_pnl", c.get("total_pnl", 0))
                 total_pos += c.get("positions", 0)
                 total_cash += c.get("cash", 0)
+            initial_all = 6_000_000
 
-        initial_all = 6_000_000
         total_ret = (total_eq - initial_all) / initial_all * 100 if initial_all > 0 else 0
 
         self.card_equity.set_value(f"¥{total_eq:,.0f}", f"{total_ret:+.2f}%", total_ret >= 0)
         self.card_pnl.set_value(f"¥{total_pnl:+,.0f}", "", total_pnl >= 0)
         self.card_today.set_value(f"¥{m_today:+,.0f}", "", m_today >= 0)
-        self.card_positions.set_value(str(total_pos), "6仓合计")
+        pos_note = "手动+竞技场" if arena_agg is not None else "6仓合计"
+        self.card_positions.set_value(str(total_pos), pos_note)
         self.card_cash.set_value(f"¥{total_cash:,.0f}", "")
 
     _MODE_COLORS = {
@@ -174,11 +189,8 @@ class DashboardPanel(QWidget):
         "quantum":   ("#4FC3F7", "⚛️ 量子仓"),
     }
 
-    def update_comparison(self, comp: dict, manual_summary: dict = None):
-        """更新六仓摘要对比表（手动仓 + 5 AI 仓）。
-        列: 总资产, 浮动盈亏, 收益率, 持仓数, 可用现金, 平仓胜率, 浮盈占比, 交易数, 盈亏
-        """
-        def _color(lbl, v_str, color_cols=()):
+    def _fill_comparison_row(self, row_idx: int, stats: dict, *, na_for_manual_only: bool = False):
+        def _color(lbl, v_str):
             lbl.setText(v_str)
             try:
                 fv = float(v_str.replace("%", "").replace("¥", "").replace(",", "").replace("+", ""))
@@ -186,73 +198,85 @@ class DashboardPanel(QWidget):
             except Exception:
                 lbl.setStyleSheet("")
 
-        # 第 0 行：手动仓
-        if manual_summary:
-            eq = manual_summary.get("total_equity", 0)
-            unrealized_pnl = manual_summary.get("unrealized_pnl", 0)
-            total_pnl = manual_summary.get("total_pnl", unrealized_pnl)
-            ret = manual_summary.get("total_return", 0)
-            n_pos = manual_summary.get("num_positions", 0)
-            cash = manual_summary.get("cash", 0)
-            total_trades = manual_summary.get("total_trades", n_pos)
-            vals = [
-                f"¥{eq:,.0f}",
-                f"¥{unrealized_pnl:+,.0f}",
-                f"{ret:+.2f}%",
-                str(n_pos),
-                f"¥{cash:,.0f}",
-                "不适用",
-                "不适用",
-                str(total_trades),
-                f"¥{total_pnl:+,.0f}",
-            ]
-            for j, v in enumerate(vals):
-                lbl = self.dash_comp_labels.get((0, j))
-                if lbl:
-                    if j in (1, 2, 7):
-                        _color(lbl, v)
-                    else:
-                        lbl.setText(v)
+        eq = float(stats.get("equity", stats.get("total_equity", 0)) or 0)
+        ret = float(stats.get("return_pct", stats.get("total_return", 0)) or 0)
+        total_pnl = float(stats.get("total_pnl", 0) or 0)
+        unrealized = float(stats.get("unrealized_pnl", total_pnl) or 0)
+        positions = int(stats.get("positions", stats.get("num_positions", 0)) or 0)
+        cash = float(stats.get("cash", 0) or 0)
+        win_rate = float(stats.get("win_rate", 0) or 0)
+        open_win_rate = float(stats.get("open_win_rate", 0) or 0)
+        trades = int(stats.get("total_trades", 0) or 0)
+        na = "不适用" if na_for_manual_only else None
+        vals = [
+            f"¥{eq:,.0f}",
+            f"¥{unrealized:+,.0f}",
+            f"{ret:+.2f}%",
+            str(positions),
+            f"¥{cash:,.0f}",
+            na if na else f"{win_rate:.1f}%",
+            na if na else f"{open_win_rate:.1f}%",
+            str(trades),
+            f"¥{total_pnl:+,.0f}",
+        ]
+        for j, v in enumerate(vals):
+            lbl = self.dash_comp_labels.get((row_idx, j))
+            if not lbl or v is None:
+                continue
+            if j in (1, 2, 8):
+                _color(lbl, v)
+            else:
+                lbl.setText(v)
 
-        # 第 1-5 行：AI 仓
+    def update_comparison(
+        self,
+        comp: dict | None = None,
+        manual_summary: dict | None = None,
+        *,
+        arena_agg: dict | None = None,
+        arena_top: list[dict] | None = None,
+    ):
+        """更新持仓摘要表。方案 A 使用 arena_agg + arena_top；legacy 使用 comp 四 AI 仓。"""
+        if arena_agg is not None:
+            if manual_summary:
+                self._fill_comparison_row(0, manual_summary, na_for_manual_only=True)
+            self._fill_comparison_row(1, arena_agg)
+            for i, row in enumerate(arena_top or []):
+                if i >= 4:
+                    break
+                name = str(row.get("display_name") or f"榜第{i + 1}")[:18]
+                if i + 2 < len(self.dash_row_labels):
+                    self.dash_row_labels[i + 2].setText(name)
+                self._fill_comparison_row(i + 2, row)
+            return
+
+        # legacy 四 AI 仓视图（FINQUANTA_LEGACY_AI_WAREHOUSES=1）
+        if len(self.dash_row_labels) >= 6:
+            legacy_labels = ["💼 手动仓", "🟣 完全自主仓", "🔵 AI推荐仓", "📌 自定义仓", "⚛️ 量子仓", ""]
+            for i, text in enumerate(legacy_labels):
+                if text:
+                    self.dash_row_labels[i].setText(text)
+
+        if manual_summary:
+            self._fill_comparison_row(0, manual_summary, na_for_manual_only=True)
+
+        comp = comp or {}
         for i, mode_key in enumerate(["full_auto", "auto", "custom", "quantum"]):
             c = comp.get(mode_key, {})
-            eq = c.get("equity", 0)
-            ret = c.get("return_pct", 0)
-            total_pnl = c.get("total_pnl", 0)
-            positions = c.get("positions", 0)
-            cash = c.get("cash", 0)
-            win_rate = c.get("win_rate", 0)
-            open_win_rate = c.get("open_win_rate", 0)
-            trades = c.get("total_trades", 0)
-
-            unrealized = c.get("unrealized_pnl", c.get("total_pnl", eq - 1_000_000))
-
-            vals = [
-                f"¥{eq:,.0f}",
-                f"¥{unrealized:+,.0f}",
-                f"{ret:+.2f}%",
-                str(positions),
-                f"¥{cash:,.0f}",
-                f"{win_rate:.1f}%",
-                f"{open_win_rate:.1f}%",
-                str(trades),
-                f"¥{total_pnl:+,.0f}",
-            ]
-            for j, v in enumerate(vals):
-                lbl = self.dash_comp_labels.get((i + 1, j))
-                if lbl:
-                    if j in (1, 2, 7):
-                        _color(lbl, v)
-                    else:
-                        lbl.setText(v)
+            if i + 1 < 6:
+                self._fill_comparison_row(i + 1, c)
 
     def update_all_positions(self, all_states: dict, prices: dict):
         """更新全仓持仓汇总表。"""
         red = QColor("#ef5350")
         green = QColor("#26a69a")
         merged = []
-        for mode_key in ["manual_portfolio", "full_auto", "auto", "custom", "quantum"]:
+        arena_keys = sorted(k for k in all_states if str(k).startswith("arena_"))
+        if arena_keys:
+            mode_keys = ["manual_portfolio"] + arena_keys
+        else:
+            mode_keys = ["manual_portfolio", "full_auto", "auto", "custom", "quantum"]
+        for mode_key in mode_keys:
             state = all_states.get(mode_key, {})
             for p in state.get("positions", []):
                 merged.append((mode_key, p))
@@ -260,7 +284,7 @@ class DashboardPanel(QWidget):
         self.pos_table.setSortingEnabled(False)
         self.pos_table.setRowCount(len(merged))
         for i, (mode_key, p) in enumerate(merged):
-            color_hex, label = self._MODE_COLORS.get(mode_key, ("#888", mode_key))
+            color_hex, label = self._MODE_COLORS.get(mode_key, ("#81C784", mode_key.replace("arena_", "🏆 ")))
             entry_price = p.get("entry_price", 0) or 0
             price = prices.get(p.get("code", ""), entry_price)
             pnl_pct = (price - entry_price) / entry_price * 100 if entry_price > 0 else 0

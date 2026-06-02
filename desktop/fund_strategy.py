@@ -428,6 +428,35 @@ def load_and_compare(period: str) -> list[dict]:
     return current
 
 
+def latest_report_period(today: date | None = None) -> str:
+    """Return the latest report period whose disclosure date has passed."""
+    today = today or date.today()
+    candidates = []
+    for period, disclosure in DISCLOSURE_DATES.items():
+        try:
+            d = date.fromisoformat(disclosure)
+        except Exception:
+            continue
+        if d <= today:
+            candidates.append((d, period))
+    if not candidates:
+        return _PERIOD_ORDER[-1]
+    candidates.sort()
+    return candidates[-1][1]
+
+
+def load_latest_fund_holdings(period: str | None = None) -> dict:
+    """Load, compare, and persist the latest fund holding period."""
+    p = period or latest_report_period()
+    holdings = load_and_compare(p)
+    return {
+        "period": p,
+        "rows": len(holdings),
+        "accumulating": sum(1 for h in holdings if "增持" in str(h.get("change_type", "")) or "新进" in str(h.get("change_type", ""))),
+        "reducing": sum(1 for h in holdings if "减持" in str(h.get("change_type", "")) or "退出" in str(h.get("change_type", ""))),
+    }
+
+
 def _ensure_daily_data(codes: list[str]):
     """检查并自动从网络补全缺失的日线数据。"""
     conn = RepoCompatConnection()

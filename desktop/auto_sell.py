@@ -1,15 +1,8 @@
 """
 自动卖出引擎
-5 种卖出规则 + ATR 跟踪止损更新
 
-完全自主仓、AI推荐仓、自定义仓、量子仓：交易时间内自动执行卖出
-
-规则优先级：
-  1. 止损触发（现价 ≤ 止损线）→ 立即卖出
-  2. ATR 跟踪止损（每日上移止损线，现价跌破新止损）→ 卖出
-  3. 时间止损（持有 > 25 天且亏损 > 2%）→ 卖出
-  4. 止盈保护（盈利 ≥ 20% 且当日跌 ≥ 3%）→ 卖出半仓
-  5. VCP 失败（突破后 3 天内跌回买入价以下）→ 卖出
+方案 A（默认）：19 路竞技场 arena_* 仅按各策略 profile 的 strategy_exit 卖出。
+旧版四 AI 仓（legacy）仍使用通用风控：止损 / ATR / 时间止损等。
 """
 import json
 import logging
@@ -20,9 +13,26 @@ from desktop.data_access import get_repo
 
 _log = logging.getLogger("auto_sell")
 
-# "manual" is the legacy storage mode for the AI recommendation portfolio.
-# Keep it in the sell-risk loop so older AI positions are not orphaned.
-_SELL_MONITORED_MODES = ("full_auto", "auto", "manual", "custom", "quantum")
+_LEGACY_AI_MODES = ("full_auto", "auto", "manual", "custom", "quantum")
+
+
+def sell_execution_modes() -> tuple[str, ...]:
+    """Modes whose sell signals are auto-executed during trading hours."""
+    modes: list[str] = []
+    try:
+        from core.config.legacy_ai import get_legacy_ai_warehouse_settings
+
+        if get_legacy_ai_warehouse_settings().enabled:
+            modes.extend(_LEGACY_AI_MODES)
+    except Exception:
+        pass
+    try:
+        from desktop.arena.participants import arena_modes
+
+        modes.extend(arena_modes())
+    except Exception:
+        pass
+    return tuple(modes)
 
 
 def _get_price(code: str, repo) -> float:
@@ -69,13 +79,51 @@ def _calc_atr(code: str, repo, period: int = 20) -> float:
 
 
 def _sell_monitored_modes() -> tuple[str, ...]:
-    legacy = ("full_auto", "auto", "manual", "custom", "quantum")
-    try:
-        from desktop.arena.participants import arena_modes
+    return sell_execution_modes()
 
-        return legacy + arena_modes()
-    except Exception:
-        return legacy
+
+def _is_arena_mode(mode: str) -> bool:
+    return str(mode).startswith("arena_")
+
+
+def _check_strategy_exit_signal(
+    mode: str,
+    code: str,
+    *,
+    entry_date: str | None = None,
+    entry_price: float = 0,
+    stop_loss: float = 0,
+    shares: int = 0,
+    partial_sold: bool = False,
+    highest_since_entry: float = 0,
+) -> dict | None:
+    """Arena modes: strategy-specific exit rules."""
+    from desktop.arena.strategy_signals import evaluate_strategy_signals, strategy_id_from_mode
+
+    sid = strategy_id_from_mode(mode)
+    if not sid:
+        return None
+    sig = evaluate_strategy_signals(
+        code,
+        sid,
+        entry_date=entry_date,
+        entry_price=entry_price,
+        stop_loss=stop_loss,
+        shares=shares,
+        partial_sold=partial_sold,
+        highest_since_entry=highest_since_entry,
+    )
+    if sig.get("strategy_exit_signal"):
+        reason = str(sig.get("strategy_exit_reason") or "策略规则退出")
+        action = str(sig.get("exit_action") or "sell_all")
+        shares_pct = int(sig.get("exit_shares_pct") or (50 if action == "sell_half" else 100))
+        return {
+            "rule": f"{sid}退出" if sid != "sepa" else "SEPA风控",
+            "reason": reason,
+            "action": action,
+            "shares_pct": shares_pct,
+        }
+    return None
 
 
 def check_sell_signals(mode: str = "full_auto") -> list[dict]:
@@ -120,6 +168,28 @@ def check_sell_signals(mode: str = "full_auto") -> list[dict]:
         except Exception:
             hold_days = 0
 
+        # ── 竞技场：仅策略 profile 退出规则，不用通用风控 ──
+        if _is_arena_mode(mode):
+            strat_exit = _check_strategy_exit_signal(
+                mode,
+                code,
+                entry_date=entry_date,
+                entry_price=entry_price,
+                stop_loss=stop_loss,
+                shares=shares,
+            )
+            if strat_exit:
+                signals.append({
+                    "code": code, "name": name, "mode": mode,
+                    "rule": strat_exit["rule"],
+                    "reason": strat_exit["reason"],
+                    "action": strat_exit["action"],
+                    "shares_pct": strat_exit["shares_pct"],
+                    "price": price, "pnl_pct": pnl_pct,
+                })
+            continue
+
+        # ── legacy 四 AI 仓：通用风控 ──
         # ── 规则1: 止损触发 ──
         if stop_loss > 0 and price <= stop_loss:
             signals.append({
@@ -203,6 +273,8 @@ def update_atr_stops() -> list[str]:
     )
 
     for pos_id, mode, code, name, entry_price, entry_date, old_stop in rows:
+        if _is_arena_mode(mode):
+            continue
         atr = _calc_atr(code, repo)
         if atr <= 0:
             continue
@@ -352,7 +424,7 @@ def execute_auto_sell() -> dict:
         action = sig["action"]
         reason = f"{sig['rule']}: {sig['reason']}"
 
-        if mode in _SELL_MONITORED_MODES and not reject:
+        if mode in sell_execution_modes() and not reject:
             # 自主仓与策略仓：卖出信号用于降风险，可自动执行。
             if action == "sell_half":
                 # 半仓卖出：先查当前股数

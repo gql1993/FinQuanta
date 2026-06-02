@@ -66,11 +66,12 @@ def test_daemon_schedule_scan_before_ai_and_arena():
         h, m = t.split(":")
         return int(h) * 60 + int(m)
 
+    arena_am = _minutes(next(x["time"] for x in SCHEDULE if x["key"] == "arena_cycle_am"))
     scan_t = _minutes(next(x["time"] for x in SCHEDULE if x["key"] == "scan_stocks"))
     ai_am = _minutes(next(x["time"] for x in SCHEDULE if x["key"] == "ai_decision" and "上午" in x["name"]))
-    arena_am = _minutes(next(x["time"] for x in SCHEDULE if x["key"] == "arena_cycle_am"))
 
-    assert scan_t < ai_am < arena_am
+    assert arena_am < scan_t < ai_am
+    assert not any(x["key"] == "strat_rotate" for x in SCHEDULE)
 
 
 def test_scheduled_pipeline_scan_survives_arena(kv_memory, monkeypatch):

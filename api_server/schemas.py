@@ -31,6 +31,24 @@ class TriggerRequest(BaseModel):
     boards: list[str] = Field(default_factory=list)
 
 
+class ManualPortfolioBuyRequest(BaseModel):
+    code: str
+    price: float = 0
+    shares: int = 100
+    stop_loss_pct: float = 8.0
+
+
+class ManualPortfolioSellRequest(BaseModel):
+    code: str
+    price: float = 0
+    shares: int = 0
+
+
+class ArenaRunRequest(BaseModel):
+    dry_run: bool = False
+    boards: list[str] = Field(default_factory=lambda: ["人工智能"])
+
+
 class CoordinatorPolicyRequest(BaseModel):
     observe_blocked_ratio: float | None = None
     sell_only_sentiment_ratio: float | None = None

@@ -1,4 +1,8 @@
 # Python
+.venv/
+.cursor/*
+!.cursor/skills/
+!.cursor/skills/**
 __pycache__/
 *.py[cod]
 *.egg-info/

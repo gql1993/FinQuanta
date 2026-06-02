@@ -29,7 +29,7 @@ def test_arena_scheduler_settings_defaults(monkeypatch):
     settings = get_arena_scheduler_settings()
 
     assert settings.enabled is True
-    assert settings.times == ["10:17", "14:03"]
+    assert settings.times == ["10:04", "14:03"]
     assert settings.push_summary is False
 
 

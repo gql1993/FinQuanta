@@ -167,6 +167,9 @@ class MainWindow(QMainWindow):
                     conn.close()
                     if row:
                         disabled = set(json.loads(row[0]))
+                        from core.config.kline_refresh import filter_protected_disabled_tasks
+
+                        disabled = filter_protected_disabled_tasks(disabled)
                         # 同步到设置面板 UI
                         for key, cb in self.settings.sched_checks.items():
                             cb.setChecked(key not in disabled)
@@ -1122,31 +1125,57 @@ class MainWindow(QMainWindow):
         self.portfolio.update_positions(pos_details)
         self.portfolio.update_history(pf.get("history", []))
 
-        # 总览页：统一快照驱动（手动仓 + AI四仓）
+        # 总览页：手动仓 + 策略竞技场（方案 A）或 legacy 四 AI 仓
         try:
+            from core.config.legacy_ai import get_legacy_ai_warehouse_settings
             from desktop.snapshot_service import get_system_snapshot
+
             snap = get_system_snapshot()
-            comp = snap.get("ai_portfolios", {})
-            self.dashboard.update_metrics(summary, comp=comp)
-            self.dashboard.update_comparison(comp, manual_summary=summary)
+            if get_legacy_ai_warehouse_settings().enabled:
+                comp = snap.get("ai_portfolios", {})
+                self.dashboard.update_metrics(summary, comp=comp)
+                self.dashboard.update_comparison(comp, manual_summary=summary)
+                all_states = {}
+                all_states["manual_portfolio"] = {
+                    "positions": [
+                        {"code": p.get("代码", ""), "name": p.get("名称", ""),
+                         "entry_price": p.get("买入价", 0), "shares": p.get("股数", 0),
+                         "entry_date": p.get("买入日", "")}
+                        for p in pos_details
+                    ],
+                    "cash": cash,
+                }
+                snap_states = snap.get("ai_states", {})
+                for mode in ("full_auto", "auto", "custom", "quantum"):
+                    all_states[mode] = snap_states.get(mode, {"positions": [], "cash": 0})
+                all_prices = dict(comp.get("prices", {}))
+            else:
+                from desktop.arena.portfolio_summary import get_arena_dashboard_data
+                from desktop.arena.participants import DEFAULT_PARTICIPANTS
+                from desktop.ai_portfolio import get_state
 
-            all_states = {}
-            # 手动仓转为统一格式
-            all_states["manual_portfolio"] = {
-                "positions": [
-                    {"code": p.get("代码", ""), "name": p.get("名称", ""),
-                     "entry_price": p.get("买入价", 0), "shares": p.get("股数", 0),
-                     "entry_date": p.get("买入日", "")}
-                    for p in pos_details
-                ],
-                "cash": cash,
-            }
-            snap_states = snap.get("ai_states", {})
-            for mode in ("full_auto", "auto", "custom", "quantum"):
-                all_states[mode] = snap_states.get(mode, {"positions": [], "cash": 0})
+                arena_agg, arena_top, arena_comp = get_arena_dashboard_data()
+                self.dashboard.update_metrics(summary, arena_agg=arena_agg)
+                self.dashboard.update_comparison(
+                    manual_summary=summary,
+                    arena_agg=arena_agg,
+                    arena_top=arena_top,
+                )
+                all_states = {
+                    "manual_portfolio": {
+                        "positions": [
+                            {"code": p.get("代码", ""), "name": p.get("名称", ""),
+                             "entry_price": p.get("买入价", 0), "shares": p.get("股数", 0),
+                             "entry_date": p.get("买入日", "")}
+                            for p in pos_details
+                        ],
+                        "cash": cash,
+                    }
+                }
+                for participant in DEFAULT_PARTICIPANTS:
+                    all_states[participant.mode] = get_state(participant.mode)
+                all_prices = dict(arena_comp.get("prices", {}))
 
-            # 合并价格（手动仓的价格也要加入）
-            all_prices = dict(comp.get("prices", {}))
             for p in pos_details:
                 code = p.get("代码", "")
                 px = p.get("现价", 0)
@@ -2528,9 +2557,13 @@ class MainWindow(QMainWindow):
         if rows:
             strategy_ids = payload.get("strategy_ids", []) or []
             sid = (
-                strategy_ids[0]
-                if len(strategy_ids) == 1
-                else (self.screening.combo_strategy.currentData() or "sepa")
+                "multi"
+                if len(strategy_ids) > 1
+                else (
+                    strategy_ids[0]
+                    if len(strategy_ids) == 1
+                    else (self.screening.combo_strategy.currentData() or "sepa")
+                )
             )
             self._save_scan_results(rows, strategy_id=str(sid))
             # 自动记录强烈买入信号到走势验证
@@ -4378,6 +4411,9 @@ class MainWindow(QMainWindow):
         for key, cb in self.settings.sched_checks.items():
             if not cb.isChecked():
                 disabled.add(key)
+        from core.config.kline_refresh import filter_protected_disabled_tasks
+
+        disabled = filter_protected_disabled_tasks(disabled)
         openclaw_time = self.settings.openclaw_daemon_time.text().strip() or "10:25"
         if not re.match(r"^([01]\d|2[0-3]):[0-5]\d$", openclaw_time):
             openclaw_time = "10:25"
@@ -6107,6 +6143,9 @@ class MainWindow(QMainWindow):
         def _done(result):
             self.arena.btn_run.setEnabled(True)
             self._refresh_arena()
+            if result.get("skipped"):
+                self.status.showMessage(result.get("message", "请先刷新 K 线"))
+                return
             n = len(result.get("participants_run", []))
             self.status.showMessage(f"策略竞技场完成: {n} 位操作手")
 

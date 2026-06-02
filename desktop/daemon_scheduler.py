@@ -56,17 +56,16 @@ _OPENCLAW_RUN_HISTORY_KEY = "openclaw_daemon_run_history"
 SCHEDULE = [
     # ── 09:50 盘前准备 ──
     {"time": "09:50", "key": "fetch_data",    "name": "拉取实时行情(盘前)", "func": "_task_fetch_data"},
-    {"time": "10:00", "key": "refresh_kline", "name": "刷新K线日线(上午)", "func": "_task_refresh_kline"},
+    {"time": "10:00", "key": "refresh_kline_am", "name": "刷新K线日线(上午)", "func": "_task_refresh_kline"},
     {"time": "10:02", "key": "refresh_boards","name": "补全板块成分股",    "func": "_task_refresh_boards"},
     # ── 10:05 选股+决策 ──
     {"time": "10:03", "key": "sector_rotate", "name": "板块轮动分析",     "func": "_task_sector_rotation"},
-    {"time": "10:04", "key": "strat_rotate",  "name": "策略轮动评估",     "func": "_task_strategy_rotation"},
+    {"time": "10:04", "key": "arena_cycle_am",  "name": "策略竞技场(上午)",  "func": "_task_arena_cycle"},
     {"time": "10:05", "key": "scan_stocks",   "name": "选股雷达扫描",     "func": "_task_scan_stocks"},
     {"time": "10:08", "key": "push_strong",   "name": "推送强烈买入信号",  "func": "_task_push_strong_buy"},
     {"time": "10:10", "key": "short_term",    "name": "短期选股+NLP",     "func": "_task_short_term"},
     {"time": "10:12", "key": "custom_top3",   "name": "自定义仓Top3买入", "func": "_task_custom_top3"},
     {"time": "10:15", "key": "ai_decision",   "name": "四仓决策(上午)",    "func": "_task_ai_decision"},
-    {"time": "10:17", "key": "arena_cycle_am",  "name": "策略竞技场(上午)",  "func": "_task_arena_cycle"},
     {"time": "10:18", "key": "auto_sell",    "name": "自动卖出检查(上午)", "func": "_task_auto_sell"},
     {"time": "10:20", "key": "quantum_buy",   "name": "量子仓优化(周一)",  "func": "_task_quantum_buy"},
     {"time": "10:25", "key": "openclaw_pipeline", "name": "OpenClaw自主全流程", "func": "_task_openclaw_pipeline"},
@@ -79,7 +78,7 @@ SCHEDULE = [
     # ── 下午 ──
     {"time": "13:00", "key": "fetch_data",    "name": "刷新实时行情(13:00)","func": "_task_fetch_data"},
     {"time": "13:00", "key": "risk_calc",     "name": "风险计算(13:00)",   "func": "_task_risk_calc"},
-    {"time": "13:30", "key": "refresh_kline", "name": "刷新K线日线(下午)", "func": "_task_refresh_kline"},
+    {"time": "13:30", "key": "refresh_kline_pm", "name": "刷新K线日线(下午)", "func": "_task_refresh_kline"},
     {"time": "14:00", "key": "fetch_data",    "name": "刷新实时行情(14:00)","func": "_task_fetch_data"},
     {"time": "14:00", "key": "ai_decision",   "name": "四仓决策(下午)",    "func": "_task_ai_decision"},
     {"time": "14:03", "key": "arena_cycle_pm",  "name": "策略竞技场(下午)",  "func": "_task_arena_cycle"},
@@ -103,7 +102,9 @@ ALERT_INTERVAL = 300  # 每5分钟检查一次
 class DaemonScheduler:
     def __init__(self, boards: list[str] = None, disabled_tasks: set = None):
         self.boards = boards or _load_openclaw_daemon_boards()
-        self.disabled_tasks = disabled_tasks or set()
+        from core.config.kline_refresh import filter_protected_disabled_tasks
+
+        self.disabled_tasks = filter_protected_disabled_tasks(disabled_tasks or set())
         self._running = True
         self._last_run = {}
         self._time_overrides = {}
@@ -250,6 +251,13 @@ class DaemonScheduler:
             ar = get_arena_scheduler_settings()
             self._time_overrides.setdefault("arena_cycle_am", ar.morning_time)
             self._time_overrides.setdefault("arena_cycle_pm", ar.afternoon_time)
+        except Exception:
+            pass
+        try:
+            from core.config.kline_refresh import get_kline_refresh_settings
+            kr = get_kline_refresh_settings()
+            self._time_overrides.setdefault("refresh_kline_am", kr.morning_time)
+            self._time_overrides.setdefault("refresh_kline_pm", kr.afternoon_time)
         except Exception:
             pass
 
@@ -605,145 +613,81 @@ class DaemonScheduler:
             _log.error(f"fetch data error: {e}")
 
     def _task_refresh_kline(self):
-        """刷新K线日线数据（写入最新 OHLCV，供K线图和策略使用）。"""
+        """刷新K线日线数据（工作日 10:00 / 13:30 自动执行，供竞技场与策略使用）。"""
+        from core.config.kline_refresh import get_kline_refresh_settings
+
+        cfg = get_kline_refresh_settings()
+        if not cfg.enabled:
+            _log.info("kline refresh skipped: FINQUANTA_KLINE_REFRESH_ENABLED=0")
+            return
+
         _log.info("refreshing daily kline data...")
         try:
-            from desktop.data_sync import refresh_latest_kline
+            from desktop.data_sync import collect_kline_refresh_codes, refresh_latest_kline
 
             repo = get_repo()
-            priority_codes = set()
-
-            try:
-                for r in repo.fetchall(
-                    "SELECT DISTINCT code FROM ai_positions WHERE status='open'", ()
-                ):
-                    priority_codes.add(r[0])
-            except Exception:
-                pass
-            try:
-                mp = get_kv_json("manual_portfolio", {}) or {}
-                for p in mp.get("positions", []):
-                    c = p.get("code", "")
-                    if c:
-                        priority_codes.add(c)
-            except Exception:
-                pass
-
-            board_codes = [
-                r[0]
-                for r in repo.fetchall(
-                    "SELECT DISTINCT code FROM board_stocks LIMIT 500", ()
-                )
-            ]
-
-            # 先刷新持仓，再刷其他
-            all_codes = list(priority_codes) + [c for c in board_codes if c not in priority_codes]
-            result = refresh_latest_kline(codes=all_codes, max_codes=800, threads=8)
+            all_codes = collect_kline_refresh_codes(repo)
+            result = refresh_latest_kline(
+                codes=all_codes,
+                max_codes=cfg.max_codes,
+                threads=cfg.threads,
+                stale_after_days=cfg.stale_after_days,
+            )
             _log.info(
                 f"kline refresh done: {result['fetched']} stocks updated, "
                 f"{result['rows_updated']} rows, {result['failed']} failed"
             )
-            self._push(
-                "📊 K线数据已刷新",
-                f"刷新 {result['fetched']} 只股票日线数据，共 {result['rows_updated']} 条记录"
-            ) if result["fetched"] > 0 else None
+            if result["fetched"] > 0:
+                self._push(
+                    "📊 K线数据已刷新",
+                    f"刷新 {result['fetched']} 只股票日线数据，共 {result['rows_updated']} 条记录",
+                )
         except Exception as e:
             _log.error(f"kline refresh error: {e}")
 
     def _task_scan_stocks(self):
-        """自动执行选股雷达扫描（使用统一策略引擎 + 当前最强策略）。"""
-        _log.info("running stock scan (strategy engine)...")
+        """选股雷达：默认不自动扫描（无系统主策略）；可选多策略，需用户先在 UI 勾选策略。"""
+        from core.config.radar import get_daemon_radar_settings
+
+        if not get_daemon_radar_settings().enabled:
+            _log.info("daemon radar scan skipped: FINQUANTA_DAEMON_AUTO_SCAN=0 (use UI scan or arena)")
+            return
+
+        _log.info("running optional multi-strategy radar scan...")
         try:
-            import numpy as np
-            from desktop.strategy_engine import build_context, score_candidate
-            from desktop.strategy_rotator import get_current_best_strategy
-
-            repo = get_repo()
-            current_strategy = get_current_best_strategy()
-
-            codes = [
-                r[0]
-                for r in repo.fetchall(
-                    "SELECT code, COUNT(*) as cnt FROM daily_kline "
-                    "GROUP BY code HAVING cnt >= 50 ORDER BY cnt DESC LIMIT 500",
-                    (),
-                )
-            ]
-
-            names = {}
-            try:
-                for r in repo.fetchall("SELECT code, name FROM stock_list", ()):
-                    names[r[0]] = r[1]
-            except Exception:
-                pass
-
-            board_map = {}
-            try:
-                for r in repo.fetchall("SELECT code, board FROM board_stocks", ()):
-                    if r[0] not in board_map:
-                        board_map[r[0]] = r[1]
-            except Exception:
-                pass
-
-            results = []
-            for code in codes:
-                rows = repo.fetchall(
-                    "SELECT close, high, low, volume FROM daily_kline "
-                    "WHERE code=? ORDER BY date DESC LIMIT 260",
-                    (code,),
-                )
-                if len(rows) < 50:
-                    continue
-                rows = rows[::-1]
-                closes = np.array([r[0] for r in rows])
-                highs = np.array([r[1] for r in rows])
-                lows = np.array([r[2] for r in rows])
-                vols = np.array([r[3] for r in rows])
-                n = len(closes)
-                price = float(closes[-1])
-                if price <= 0:
-                    continue
-
-                ctx = build_context(code, closes, highs, lows, vols)
-                scored = score_candidate(current_strategy, ctx)
-                score = scored["score"]
-
-                if score >= 40:
-                    results.append({
-                        "代码": code,
-                        "名称": names.get(code, code),
-                        "板块": board_map.get(code, ""),
-                        "策略": scored["strategy"],
-                        "评分": str(score),
-                        "价格": f"{price:.2f}",
-                        "建议买入": scored["buy_advice"],
-                        "建议操作": scored["action_advice"],
-                        "VCP": "✓" if scored["vcp"] else "",
-                        "突破": "✓" if scored["breakout"] else "",
-                        "收缩": f"{scored['contraction']:.2f}" if scored["contraction"] else "",
-                        "量比": f"{scored['vol_ratio']:.1f}" if scored["vol_ratio"] else "",
-                        "RS": str(scored["rs"]),
-                        "离高点%": f"{scored['dist_high']:+.1f}%",
-                    })
-
-            results.sort(key=lambda x: int(x.get("评分", "0")), reverse=True)
-            results = results[:50]
-
+            from desktop.data_access import get_kv_json
+            from desktop.radar_scan import run_multi_strategy_radar_scan
             from desktop.scan_store import save_scan_results
 
-            save_scan_results(results, source="daemon", strategy_id=current_strategy)
+            strategy_ids = get_kv_json("screening_multi_scan_selection", []) or []
+            if not isinstance(strategy_ids, list):
+                strategy_ids = []
+            strategy_ids = [str(s) for s in strategy_ids if s]
+            if not strategy_ids:
+                _log.info(
+                    "daemon radar scan skipped: set strategies in 选股雷达 multi-scan first "
+                    "(screening_multi_scan_selection empty)"
+                )
+                return
+
+            payload = run_multi_strategy_radar_scan(strategy_ids)
+            results = payload.get("candidates") or []
+            strategy_id = str(payload.get("strategy_id") or "multi")
+
+            save_scan_results(results, source="daemon", strategy_id=strategy_id)
 
             n_r = len(results)
             top3 = ", ".join(f"{r['代码']}({r['评分']})" for r in results[:3])
-            _log.info(f"scan done: {n_r} candidates, strategy={current_strategy}, top3: {top3}")
+            _log.info(f"scan done: {n_r} candidates, strategies={strategy_ids}, top3: {top3}")
             if n_r > 0:
                 self._push(
                     f"选股雷达 {n_r}只候选",
-                    f"策略: {current_strategy}\\nTop3: {top3}"
+                    f"策略: {', '.join(strategy_ids)}\\nTop3: {top3}",
                 )
 
             try:
                 from desktop.trend_verify import record_signals
+
                 record_signals(results[:10])
             except Exception:
                 pass
@@ -776,7 +720,12 @@ class DaemonScheduler:
             _log.error(f"push strong buy error: {e}")
 
     def _task_custom_top3(self):
-        """扫描后自动执行自定义仓 Top3 买入。"""
+        """扫描后自动执行自定义仓 Top3 买入（legacy，默认停用）。"""
+        from core.config.legacy_ai import get_legacy_ai_warehouse_settings
+
+        if not get_legacy_ai_warehouse_settings().enabled:
+            _log.info("custom top3 skipped: legacy AI warehouses disabled")
+            return
         _log.info("auto buying custom portfolio Top3...")
         try:
             from desktop.custom_portfolio import auto_buy_top3_from_scan
@@ -787,7 +736,12 @@ class DaemonScheduler:
             _log.error(f"custom top3 error: {e}")
 
     def _task_quantum_buy(self):
-        """量子优化并买入（每周一执行，其他日跳过）。"""
+        """量子优化并买入（legacy，默认停用）。"""
+        from core.config.legacy_ai import get_legacy_ai_warehouse_settings
+
+        if not get_legacy_ai_warehouse_settings().enabled:
+            _log.info("quantum buy skipped: legacy AI warehouses disabled")
+            return
         from datetime import date as _date
         if _date.today().weekday() != 0:
             _log.info("quantum buy: skipped (only runs on Monday)")
@@ -858,29 +812,6 @@ class DaemonScheduler:
         except Exception as e:
             _log.error(f"sector rotation error: {e}")
 
-    def _task_strategy_rotation(self):
-        """策略轮动：跑全部8策略，选出最强策略。"""
-        _log.info("running strategy rotation...")
-        try:
-            from desktop.strategy_rotator import evaluate_rotation
-            result = evaluate_rotation()
-            best = result.get("best_name", "SEPA")
-            score = result.get("best_score", 0)
-            _log.info(f"rotation: best={best}({score:.1f})")
-            # 推送轮动结果
-            rankings = result.get("rankings", [])
-            if rankings:
-                lines = ["📊 策略轮动评估结果", ""]
-                for i, r in enumerate(rankings[:5], 1):
-                    marker = "👑" if i == 1 else f"{i}."
-                    lines.append(
-                        f"　　{marker} {r['name']}: 综合{r['composite_score']:.0f}分  "
-                        f"候选{r['candidates']}只  准确率{r['accuracy']:.0f}%"
-                    )
-                self._push(f"策略轮动: {best}最强", "\n".join(lines))
-        except Exception as e:
-            _log.error(f"strategy rotation error: {e}")
-
     def _task_auto_sell(self):
         """自动卖出检查：5种规则 + ATR更新 + 完全自主仓执行 + 其他仓推送。"""
         _log.info("running auto sell check...")
@@ -910,20 +841,28 @@ class DaemonScheduler:
         try:
             # 事件选股：抓取资讯
             try:
-                from desktop.event_strategy import fetch_news_eastmoney
+                from desktop.event_strategy import fetch_news_eastmoney, persist_news_events_and_sentiment
                 news = fetch_news_eastmoney(limit=20)
                 if news:
                     _log.info(f"fetched {len(news)} news items")
                     # NLP 情绪分析
                     try:
                         from desktop.news_nlp import batch_analyze
-                        sentiments = batch_analyze([n.get("title", "") for n in news[:10]])
-                        pos = sum(1 for s in sentiments if s.get("sentiment") == "positive")
-                        neg = sum(1 for s in sentiments if s.get("sentiment") == "negative")
+                        sentiments = batch_analyze([dict(n) for n in news[:10]])
+                        pos = sum(1 for s in sentiments if "多" in str(s.get("nlp_label", "")))
+                        neg = sum(1 for s in sentiments if "空" in str(s.get("nlp_label", "")))
                         _log.info(f"NLP sentiment: positive={pos}, negative={neg}")
 
+                        persisted = persist_news_events_and_sentiment(sentiments, source="eastmoney")
+                        _log.info(
+                            "news persisted: events=%s matched=%s neg_ratio=%.2f",
+                            persisted.get("saved_events", 0),
+                            persisted.get("matched_events", 0),
+                            persisted.get("sentiment", {}).get("negative_ratio", 0.0),
+                        )
+
                         # 高影响事件自动推送
-                        urgent = [s for s in sentiments if s.get("urgency") == "high"]
+                        urgent = [s for s in sentiments if int(s.get("nlp_urgency", 0) or 0) >= 3]
                         if urgent or neg >= 5:
                             alert_titles = [n.get("title", "")[:30] for n in news[:3]]
                             self._push(
@@ -932,12 +871,16 @@ class DaemonScheduler:
                             )
                     except Exception as e:
                         _log.warning(f"NLP skipped: {e}")
+                        persisted = persist_news_events_and_sentiment(news, source="eastmoney")
+                        _log.info(f"news persisted without NLP: {persisted}")
             except Exception as e:
                 _log.warning(f"news fetch skipped: {e}")
 
-            # 基金持仓：加载明星基金经理
+            # 基金持仓：刷新最新报告期并保存 fund_holdings
             try:
-                from desktop.fund_strategy import get_star_managers
+                from desktop.fund_strategy import get_star_managers, load_latest_fund_holdings
+                fund_summary = load_latest_fund_holdings()
+                _log.info(f"fund holdings loaded: {fund_summary}")
                 managers = get_star_managers()
                 if managers:
                     _log.info(f"star fund managers: {len(managers)}")
@@ -948,7 +891,12 @@ class DaemonScheduler:
             _log.error(f"short-term analysis error: {e}")
 
     def _task_ai_decision(self):
-        """三仓决策 + 推送。"""
+        """三仓决策 + 推送（legacy，默认停用）。"""
+        from core.config.legacy_ai import get_legacy_ai_warehouse_settings
+
+        if not get_legacy_ai_warehouse_settings().enabled:
+            _log.info("ai decision skipped: legacy AI warehouses disabled")
+            return
         _log.info("running AI decisions...")
         try:
             from desktop.auto_scheduler import run_scheduled_task
@@ -981,6 +929,9 @@ class DaemonScheduler:
             from desktop.arena.scheduler_hooks import run_arena_scheduled
 
             result = run_arena_scheduled(boards=self.boards)
+            if result.get("skipped"):
+                _log.warning("arena cycle skipped: %s", result.get("message", "请先刷新 K 线"))
+                return
             leader = (result.get("leaderboard") or {}).get("leader", "")
             _log.info("arena cycle done: leader=%s", leader)
         except Exception as e:
@@ -1854,6 +1805,9 @@ def get_daemon_runtime_status() -> dict:
         except Exception:
             raw_disabled = []
     disabled = {str(item) for item in raw_disabled} if isinstance(raw_disabled, list) else set()
+    from core.config.kline_refresh import filter_protected_disabled_tasks
+
+    disabled = filter_protected_disabled_tasks(disabled)
     overrides = get_kv_json("sched_time_overrides", {}) or {}
     if isinstance(overrides, str):
         try:

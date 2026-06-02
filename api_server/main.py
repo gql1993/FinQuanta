@@ -48,6 +48,9 @@ from api_server.schemas import (
     PushConfigRequest,
     SyncExportRequest,
     SyncImportRequest,
+    ArenaRunRequest,
+    ManualPortfolioBuyRequest,
+    ManualPortfolioSellRequest,
     PushTestRequest,
     RevokeTokensRequest,
     TriggerRequest,
@@ -94,6 +97,22 @@ from core.application.portfolio_service import (
     get_portfolio_positions,
     get_portfolio_recommendations,
     get_portfolio_summary,
+)
+from core.application.arena_service import (
+    get_arena_latest_run,
+    get_arena_leaderboard,
+    get_arena_positions,
+    run_arena_cycle,
+)
+from core.application.manual_portfolio_service import (
+    get_manual_portfolio_detail,
+    manual_buy,
+    manual_sell,
+)
+from core.application.short_term_service import (
+    get_news_sentiment_snapshot,
+    list_fund_holdings,
+    list_recent_events,
 )
 from core.application.registry_service import (
     get_registered_agents,
@@ -251,6 +270,9 @@ def _autostart_daemon_if_enabled():
             except Exception:
                 raw_disabled = []
         disabled = set(raw_disabled) if isinstance(raw_disabled, list) else set()
+        from core.config.kline_refresh import filter_protected_disabled_tasks
+
+        disabled = filter_protected_disabled_tasks(disabled)
         start_daemon(boards=boards, disabled_tasks=disabled)
         _DAEMON_BOOTSTRAP["started"] = True
         _DAEMON_BOOTSTRAP["detail"] = "daemon scheduler started by api"
@@ -307,6 +329,21 @@ def require_observability_reader(
     if configured and candidate and candidate == configured:
         return {"username": "observability_reader", "role": "viewer"}
     return require_user(authorization)
+
+
+@app.get("/")
+def root():
+    """Browser-friendly index when visiting the API port directly."""
+    web_hint = os.environ.get("FINQUANTA_WEB_URL", "http://127.0.0.1:8501")
+    return {
+        "ok": True,
+        "service": "finquanta-api",
+        "message": "这是后端 API，不是图形界面。请用浏览器打开 Web 控制台。",
+        "web_ui": web_hint,
+        "health": "/health",
+        "api_docs": "/docs",
+        "login": "POST /api/auth/login",
+    }
 
 
 @app.get("/health")
@@ -484,6 +521,97 @@ def api_portfolio_positions(authorization: str | None = Header(default=None)):
 def api_portfolio_recommendations(authorization: str | None = Header(default=None), limit: int = 20):
     require_user(authorization)
     return ApiResponse(data=get_portfolio_recommendations(limit=limit))
+
+
+@app.get("/api/portfolio/manual", response_model=ApiResponse)
+def api_manual_portfolio(authorization: str | None = Header(default=None)):
+    require_user(authorization)
+    return ApiResponse(data=get_manual_portfolio_detail())
+
+
+@app.post("/api/portfolio/manual/buy", response_model=ApiResponse)
+def api_manual_portfolio_buy(
+    req: ManualPortfolioBuyRequest,
+    authorization: str | None = Header(default=None),
+):
+    user = require_user(authorization)
+    if not has_permission(user, "task:trigger"):
+        raise HTTPException(status_code=403, detail="permission denied")
+    result = manual_buy(
+        req.code,
+        price=req.price,
+        shares=req.shares,
+        stop_loss_pct=req.stop_loss_pct,
+    )
+    return ApiResponse(ok=bool(result.get("ok")), message=result.get("message", ""), data=result)
+
+
+@app.post("/api/portfolio/manual/sell", response_model=ApiResponse)
+def api_manual_portfolio_sell(
+    req: ManualPortfolioSellRequest,
+    authorization: str | None = Header(default=None),
+):
+    user = require_user(authorization)
+    if not has_permission(user, "task:trigger"):
+        raise HTTPException(status_code=403, detail="permission denied")
+    result = manual_sell(req.code, price=req.price, shares=req.shares)
+    return ApiResponse(ok=bool(result.get("ok")), message=result.get("message", ""), data=result)
+
+
+@app.get("/api/arena/leaderboard", response_model=ApiResponse)
+def api_arena_leaderboard(authorization: str | None = Header(default=None)):
+    require_user(authorization)
+    return ApiResponse(data=get_arena_leaderboard())
+
+
+@app.get("/api/arena/positions", response_model=ApiResponse)
+def api_arena_positions(authorization: str | None = Header(default=None)):
+    require_user(authorization)
+    return ApiResponse(data=get_arena_positions())
+
+
+@app.get("/api/arena/run/latest", response_model=ApiResponse)
+def api_arena_run_latest(authorization: str | None = Header(default=None)):
+    require_user(authorization)
+    return ApiResponse(data=get_arena_latest_run())
+
+
+@app.post("/api/arena/run", response_model=ApiResponse)
+def api_arena_run(req: ArenaRunRequest, authorization: str | None = Header(default=None)):
+    user = require_user(authorization)
+    if not has_permission(user, "task:trigger"):
+        raise HTTPException(status_code=403, detail="permission denied")
+    if req.dry_run:
+        return ApiResponse(data={"dry_run": True, "boards": req.boards})
+    result = run_arena_cycle(boards=req.boards or None)
+    return ApiResponse(data=result, message="arena cycle completed")
+
+
+@app.get("/api/short-term/events", response_model=ApiResponse)
+def api_short_term_events(authorization: str | None = Header(default=None), limit: int = 50):
+    require_user(authorization)
+    return ApiResponse(data={"items": list_recent_events(limit=limit)})
+
+
+@app.get("/api/short-term/fund-holdings", response_model=ApiResponse)
+def api_short_term_fund_holdings(
+    authorization: str | None = Header(default=None),
+    report_period: str = "",
+    limit: int = 100,
+):
+    require_user(authorization)
+    return ApiResponse(
+        data=list_fund_holdings(
+            report_period=report_period.strip() or None,
+            limit=limit,
+        )
+    )
+
+
+@app.get("/api/short-term/sentiment", response_model=ApiResponse)
+def api_short_term_sentiment(authorization: str | None = Header(default=None)):
+    require_user(authorization)
+    return ApiResponse(data=get_news_sentiment_snapshot())
 
 
 @app.get("/api/messages", response_model=ApiResponse)

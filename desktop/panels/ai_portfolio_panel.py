@@ -52,6 +52,11 @@ class AIPortfolioPanel(QWidget):
         self.scan_meta_label.setWordWrap(True)
         layout.addWidget(self.scan_meta_label)
 
+        self.legacy_notice = QLabel("")
+        self.legacy_notice.setWordWrap(True)
+        self.legacy_notice.setStyleSheet("color:#ffb74d; font-size:12px; padding:4px 8px; background:#2a2110; border-radius:4px;")
+        layout.addWidget(self.legacy_notice)
+
         # 兼容旧引用（隐藏的虚拟控件）
         self.provider_combo = QComboBox(); self.provider_combo.setVisible(False)
         self.model_combo = QComboBox(); self.model_combo.setVisible(False)
@@ -142,6 +147,39 @@ class AIPortfolioPanel(QWidget):
         tabs.addTab(self._build_tracking_tab(), "📌 自定义仓跟踪")
         layout.addWidget(tabs)
         self._apply_theme_styles()
+        self._apply_plan_a_legacy_mode()
+
+    def _apply_plan_a_legacy_mode(self):
+        """方案 A：默认停用四 AI 仓按钮，引导使用策略竞技场。"""
+        try:
+            from core.config.legacy_ai import get_legacy_ai_warehouse_settings
+
+            legacy = get_legacy_ai_warehouse_settings().enabled
+        except Exception:
+            legacy = False
+
+        legacy_buttons = (
+            self.btn_full_auto,
+            self.btn_auto_run,
+            self.btn_custom_scan,
+            self.btn_quantum_buy,
+            self.btn_custom_calibrate,
+        )
+        if legacy:
+            self.legacy_notice.setText("")
+            self.legacy_notice.setVisible(False)
+            for btn in legacy_buttons:
+                btn.setEnabled(True)
+            return
+
+        self.legacy_notice.setText(
+            "方案 A 已启用：模拟交易以「🏆 策略竞技场」19 路策略为主（10:04/14:03 自动买卖）。"
+            " 本页四 AI 仓为旧版功能，已停用定时任务；如需恢复请设置 FINQUANTA_LEGACY_AI_WAREHOUSES=1。"
+        )
+        self.legacy_notice.setVisible(True)
+        for btn in legacy_buttons:
+            btn.setEnabled(False)
+            btn.setToolTip("已停用：请使用「策略竞技场」标签页")
 
     _PROVIDER_CONFIG = {
         "DeepSeek": {

@@ -54,16 +54,18 @@ class SettingsPanel(QWidget):
 
         _tasks = [
             ("fetch_data",    "刷新实时行情",   "09:50,11:00,12:00,13:00,14:00", "每小时刷新报价"),
-            ("refresh_kline", "刷新K线日线",    "10:00, 13:30", "8线程并发补全日K"),
+            ("refresh_kline", "刷新K线日线",    "10:00, 13:30", "工作日自动执行，不可关闭"),
             ("refresh_boards","补全板块成分股", "10:02", "K线刷新后补全缺失数据"),
-            ("scan_stocks",   "选股雷达扫描",   "10:05", "轮动最强策略扫描Top50"),
+            ("scan_stocks",   "选股雷达扫描",   "10:05", "默认关闭；需 FINQUANTA_DAEMON_AUTO_SCAN=1"),
             ("push_strong",   "推送强烈买入",   "10:08", "自动推送到微信/企微"),
             ("short_term",    "短期选股+NLP",   "10:10", "新闻情绪+基金持仓"),
-            ("custom_top3",   "自定义仓Top3",   "10:12", "自动买入扫描Top3"),
-            ("ai_decision",   "AI 四仓决策",    "10:15, 14:00", "完全自主+AI推荐"),
-            ("quantum_buy",   "量子仓优化",     "10:20(仅周一)", "每周一量子优化买入"),
+            ("custom_top3",   "自定义仓Top3",   "10:12", "legacy 默认关闭"),
+            ("ai_decision",   "AI 四仓决策",    "10:15, 14:00", "legacy 默认关闭"),
+            ("quantum_buy",   "量子仓优化",     "10:20(仅周一)", "legacy 默认关闭"),
+            ("arena_cycle_am", "策略竞技场(上午)", "10:04", "19策略自动买+卖"),
+            ("arena_cycle_pm", "策略竞技场(下午)", "14:03", "19策略自动买+卖"),
             ("openclaw_pipeline", "OpenClaw自主全流程", "10:25", "无人值守选股/研判/风控/执行"),
-            ("auto_sell",     "自动卖出检查",   "10:18, 14:05", "5种规则+ATR止损+推送"),
+            ("auto_sell",     "自动卖出检查",   "10:18, 14:05", "竞技场19路+手动仓；legacy四AI仓可选"),
             ("risk_calc",     "组合风险计算",   "10:30~14:30(5次)", "VaR/HHI/敞口"),
             ("watchlist_scan","关注股异常扫描", "11:00, 14:00", "大涨大跌/放量/突破"),
             ("trend_verify",  "走势验证校准",   "15:30", "1~60日走势校准"),
@@ -87,6 +89,12 @@ class SettingsPanel(QWidget):
             tip_lbl = QLabel(tip)
             tip_lbl.setStyleSheet(f"color:#666; font-size:{APP_FONT['caption']}px;")
             task_grid.addWidget(tip_lbl, i, 3)
+
+        if "refresh_kline" in self.sched_checks:
+            kline_cb = self.sched_checks["refresh_kline"]
+            kline_cb.setChecked(True)
+            kline_cb.setEnabled(False)
+            kline_cb.setToolTip("工作日 10:00 / 13:30 由守护进程自动刷新（竞技场必备）")
 
         sl.addLayout(task_grid)
 

@@ -31,9 +31,9 @@ class ArenaPanel(QWidget):
 
         hint = QLabel(
             "每位操作手独立 1 个模拟仓（各 100 万），对应 strategy_profiles 全部 19 种策略，"
-            " 选股规则与「选股雷达」一致，公平对比谁更适合 A 股。"
-            " 原「AI 仓」四仓仍在，与此竞技场分开统计。"
-            " 交易日默认 10:17 / 14:03 自动跑一轮（客户端或 daemon 运行时生效）。"
+            "选股规则与「选股雷达」一致，公平对比谁更适合 A 股。"
+            " arena_sepa 采用《股票魔法师》完整 SEPA：大盘分布日+Stage2 市场环境过滤，"
+            " 个股趋势模板+VCP枢纽突破买入，RiskManager 硬止损/Stage3/高潮顶/部分止盈等卖出。"
         )
         hint.setWordWrap(True)
         hint.setStyleSheet("color:#8b949e; font-size:12px; padding:4px 0 8px 0;")
@@ -122,13 +122,22 @@ class ArenaPanel(QWidget):
                     if row.get("participant_id") == lb["leader"]:
                         leader_name = row.get("display_name", "-")
                         break
-            self.summary_label.setText(
-                f"领先: {leader_name}  |  更新: {lb.get('generated_at', '')}  |  "
-                + format_leaderboard_text(lb).split("\n")[-1]
-            )
 
             last_run = get_kv_json("arena_run_latest", {}) or {}
-            lines = [last_run.get("leaderboard_text", "尚未运行竞技场")]
+            if last_run.get("skipped") and last_run.get("message"):
+                self.summary_label.setText(f"⚠ {last_run['message']}")
+                self.summary_label.setStyleSheet("color:#ffb74d; font-size:13px; padding:6px;")
+            else:
+                self.summary_label.setText(
+                    f"领先: {leader_name}  |  更新: {lb.get('generated_at', '')}  |  "
+                    + format_leaderboard_text(lb).split("\n")[-1]
+                )
+                self.summary_label.setStyleSheet("color:#4fc3f7; font-size:13px; padding:6px;")
+
+            if last_run.get("skipped") and last_run.get("message"):
+                lines = [last_run["message"], ""]
+            else:
+                lines = [last_run.get("leaderboard_text", "尚未运行竞技场")]
             run_log = last_run.get("run_log", {})
             if run_log:
                 lines.append("")

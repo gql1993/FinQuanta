@@ -18,7 +18,7 @@ class AiSchedulerSettings:
 @dataclass(frozen=True)
 class ArenaSchedulerSettings:
     enabled: bool = True
-    morning_time: str = "10:17"
+    morning_time: str = "10:04"
     afternoon_time: str = "14:03"
     push_summary: bool = False
 
@@ -37,7 +37,7 @@ def get_ai_scheduler_settings() -> AiSchedulerSettings:
 def get_arena_scheduler_settings() -> ArenaSchedulerSettings:
     return ArenaSchedulerSettings(
         enabled=settings_center.get_bool("FINQUANTA_ARENA_SCHEDULER_ENABLED", default=True),
-        morning_time=settings_center.get_str("FINQUANTA_ARENA_SCHEDULER_MORNING_TIME", "10:17"),
+        morning_time=settings_center.get_str("FINQUANTA_ARENA_SCHEDULER_MORNING_TIME", "10:04"),
         afternoon_time=settings_center.get_str("FINQUANTA_ARENA_SCHEDULER_AFTERNOON_TIME", "14:03"),
         push_summary=settings_center.get_bool("FINQUANTA_ARENA_SCHEDULER_PUSH", default=False),
     )

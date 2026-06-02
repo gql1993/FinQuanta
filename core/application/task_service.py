@@ -24,7 +24,7 @@ _RUNNING_TASKS: set[str] = set()
 _QUEUED_TASKS: set[str] = set()
 _TASK_QUEUE: list[dict] = []
 _QUEUE_SEQ = 0
-_SUPPORTED_TASK_KEYS = {"scan", "learn", "pipeline", "risk", "backtest", "watchlist", "short_term"}
+_SUPPORTED_TASK_KEYS = {"scan", "learn", "pipeline", "risk", "backtest", "watchlist", "short_term", "arena"}
 _TASK_STATE_STORE_KEY = "api_task_state_v1"
 _TASK_HISTORY_STORE_KEY = "api_task_history_v1"
 _MAX_CONCURRENT_TASKS = max(1, int(os.environ.get("FINQUANTA_TASK_MAX_CONCURRENCY", "2")))
@@ -614,6 +614,12 @@ def trigger_named_task(task_key: str, boards: list[str] | None = None, *, tracep
         "backtest": ("workflow.auto_backtest", scheduler._task_auto_backtest),
         "watchlist": ("workflow.watchlist_scan", scheduler._task_watchlist_scan),
         "short_term": ("workflow.short_term_scan", scheduler._task_short_term),
+        "arena": (
+            "workflow.arena_cycle",
+            lambda: __import__(
+                "desktop.arena.runner", fromlist=["run_arena_cycle"]
+            ).run_arena_cycle(),
+        ),
     }
     flow = mapping.get(task_key)
     if not flow:

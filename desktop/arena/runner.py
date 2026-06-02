@@ -7,6 +7,7 @@ from datetime import datetime
 
 from desktop.arena.leaderboard import format_leaderboard_text, get_leaderboard, save_leaderboard_csv
 from desktop.arena.participants import ArenaParticipant, ensure_participant_accounts, list_active_participants
+from desktop.arena.data_readiness import assess_kline_readiness
 from desktop.arena.snapshot import build_shared_snapshot, get_strategy_candidates
 from desktop.arena.strategy_runner import buy_strategy_top
 from desktop.data_access import set_kv_json
@@ -30,6 +31,43 @@ def run_participant(
     return [f"未知 pipeline: {participant.pipeline}"]
 
 
+def _build_kline_skip_result(
+    boards: list[str],
+    ts: str,
+    readiness,
+) -> dict:
+    """Skip arena round without writing an empty strategy snapshot."""
+    from datetime import date
+
+    leaderboard = get_leaderboard()
+    hint = readiness.message
+    leaderboard_text = f"⚠️ {hint}\n\n{format_leaderboard_text(leaderboard)}"
+    _log.warning("arena cycle skipped: %s", hint)
+
+    result = {
+        "time": ts,
+        "boards": boards,
+        "skipped": True,
+        "skip_reason": "kline_insufficient",
+        "message": hint,
+        "kline_readiness": {
+            "eligible_codes": readiness.eligible_codes,
+            "total_codes": readiness.total_codes,
+            "min_bars": readiness.min_bars,
+            "min_eligible_codes": readiness.min_eligible_codes,
+        },
+        "snapshot": {},
+        "participants_run": [],
+        "run_log": {},
+        "leaderboard": leaderboard,
+        "leaderboard_text": leaderboard_text,
+        "leaderboard_csv": "",
+    }
+    set_kv_json(f"arena_run_{date.today().isoformat()}", result)
+    set_kv_json("arena_run_latest", result)
+    return result
+
+
 def run_arena_cycle(
     boards: list[str] | None = None,
     *,
@@ -41,6 +79,10 @@ def run_arena_cycle(
 
     boards = boards or ["人工智能"]
     ts = datetime.now().isoformat(timespec="seconds")
+
+    readiness = assess_kline_readiness()
+    if not readiness.ok:
+        return _build_kline_skip_result(boards, ts, readiness)
 
     ensure_participant_accounts()
     snapshot = build_shared_snapshot(boards, force=force_snapshot)

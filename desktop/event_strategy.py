@@ -493,6 +493,90 @@ def auto_analyze_news(news_list: list[dict]) -> list[dict]:
     return news_list
 
 
+def persist_news_events_and_sentiment(
+    news_list: list[dict],
+    *,
+    source: str = "auto_news",
+    max_events: int = 20,
+) -> dict:
+    """Persist matched news as events and write news_sentiment_snapshot."""
+    from desktop.data_access import set_kv_json
+
+    analyzed = auto_analyze_news([dict(n) for n in (news_list or [])])
+    conn = RepoCompatConnection()
+    saved = 0
+    matched_total = 0
+    try:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_date TEXT,
+                event_text TEXT,
+                source TEXT,
+                matched_boards TEXT,
+                created_at TEXT
+            )
+        """)
+        for item in analyzed[:max_events]:
+            title = str(item.get("title", "") or "").strip()
+            digest = str(item.get("digest", "") or "").strip()
+            text = title if not digest else f"{title} {digest[:120]}"
+            boards = item.get("matched_boards") or []
+            if not text or not boards:
+                continue
+            matched_total += 1
+            event_date = str(item.get("date") or date.today().isoformat())[:10]
+            src = str(item.get("source") or source)
+            exists = conn.execute(
+                "SELECT 1 FROM events WHERE event_date=? AND event_text=? AND source=? LIMIT 1",
+                (event_date, text, src),
+            ).fetchone()
+            if exists:
+                continue
+            conn.execute(
+                "INSERT INTO events (event_date, event_text, source, matched_boards, created_at) "
+                "VALUES (?,?,?,?,?)",
+                (
+                    event_date,
+                    text,
+                    src,
+                    json.dumps(boards, ensure_ascii=False),
+                    datetime.now().isoformat(),
+                ),
+            )
+            saved += 1
+        conn.commit()
+    finally:
+        conn.close()
+
+    total = len(analyzed)
+    positive = sum(
+        1
+        for n in analyzed
+        if any(x in str(n.get("nlp_label") or n.get("direction") or "") for x in ("多", "利好"))
+    )
+    negative = sum(
+        1
+        for n in analyzed
+        if any(x in str(n.get("nlp_label") or n.get("direction") or "") for x in ("空", "利空"))
+    )
+    urgent = sum(1 for n in analyzed if int(n.get("nlp_urgency", 0) or 0) >= 3)
+    snapshot = {
+        "total": total,
+        "positive": positive,
+        "negative": negative,
+        "neutral": max(0, total - positive - negative),
+        "urgent": urgent,
+        "negative_ratio": round(negative / total, 4) if total else 0.0,
+        "positive_ratio": round(positive / total, 4) if total else 0.0,
+        "matched_events": matched_total,
+        "saved_events": saved,
+        "updated_at": datetime.now().isoformat(),
+    }
+    set_kv_json("news_sentiment_snapshot", snapshot)
+    return {"saved_events": saved, "matched_events": matched_total, "sentiment": snapshot}
+
+
 # ============================================================
 #  事件-股价历史关联分析引擎
 # ============================================================

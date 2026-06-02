@@ -1,13 +1,8 @@
 """
-策略轮动引擎
-每天自动跑全部 8 种策略，评估各策略近期表现，选出当前最强策略。
-结果保存到 kv_store，供 AI 决策和 OpenClaw 学习引擎使用。
+板块轮动 + 离线策略评估工具。
 
-轮动逻辑：
-  1. 对每种策略执行一次扫描（各取 Top10）
-  2. 从走势验证历史统计各策略准确率和收益
-  3. 综合评分 = 候选数量 × 0.3 + 准确率 × 0.4 + 近期收益 × 0.3
-  4. 选出评分最高的策略作为"当前最强策略"
+系统不再维护「主策略」：19 种策略在竞技场平行赛跑，选股雷达由 UI 手动/多策略扫描，
+或可选 daemon 多策略扫描（FINQUANTA_DAEMON_AUTO_SCAN=1）。
 """
 import os
 import json
@@ -205,20 +200,6 @@ def evaluate_rotation() -> dict:
 
     _log.info(f"rotation result: best={result['best_name']}({result['best_score']:.1f})")
     return result
-
-
-def get_current_best_strategy() -> str:
-    """获取当前最强策略ID。"""
-    try:
-        conn = RepoCompatConnection()
-        row = conn.execute("SELECT value FROM kv_store WHERE key='strategy_rotation'").fetchone()
-        conn.close()
-        if row:
-            data = json.loads(row[0])
-            return data.get("best_strategy", "sepa")
-    except Exception:
-        pass
-    return "sepa"
 
 
 def evaluate_sector_rotation() -> dict:
