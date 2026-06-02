@@ -74,8 +74,12 @@ class MainWindow(QMainWindow):
         self._auto_refresh_timer.timeout.connect(self._on_auto_refresh)
         self._auto_refresh_timer.start(60_000)
 
-        # 后台守护调度器（替代旧的 QTimer 调度）
+        self._sync_timer = QTimer(self)
+        self._sync_timer.timeout.connect(self._on_cloud_sync_tick)
+
+        # 后台守护调度器（云端同步开启时默认不在本机启动，避免双写）
         self._daemon = None
+        self._init_cloud_sync()
         self._start_daemon()
 
         QTimer.singleShot(500, self._safe_initial_load)
@@ -141,8 +145,113 @@ class MainWindow(QMainWindow):
         w.start()
         self._startup_refresh_worker = w
 
+    def _init_cloud_sync(self):
+        try:
+            from desktop.sync_client import (
+                install_sync_hooks,
+                is_sync_enabled,
+                load_sync_config,
+                run_sync,
+                should_disable_local_daemon,
+            )
+
+            install_sync_hooks()
+            cfg = load_sync_config()
+            if hasattr(self, "settings"):
+                try:
+                    from desktop.data_access import get_kv_json
+
+                    cfg["last_state"] = get_kv_json("_finquanta_sync_state", {}) or {}
+                except Exception:
+                    pass
+                self._load_sync_settings_ui(cfg)
+            if cfg.get("enabled"):
+                interval = max(10, int(cfg.get("interval_seconds", 30) or 30)) * 1000
+                self._sync_timer.start(interval)
+                QTimer.singleShot(2000, lambda: self._run_cloud_sync(show_status=True))
+            if is_sync_enabled() and should_disable_local_daemon():
+                self.status.showMessage("云端同步已启用：本机守护进程未启动（由服务器执行定时任务）", 8000)
+        except Exception as exc:
+            _log.debug("cloud sync init skipped: %s", exc)
+
+    def _load_sync_settings_ui(self, cfg: dict):
+        p = self.settings
+        p.sync_enabled.setChecked(bool(cfg.get("enabled")))
+        p.sync_api_base.setText(str(cfg.get("api_base", "http://127.0.0.1:9000")))
+        p.sync_username.setText(str(cfg.get("username", "admin")))
+        if cfg.get("password"):
+            p.sync_password.setText(str(cfg.get("password")))
+        p.sync_interval.setValue(int(cfg.get("interval_seconds", 30) or 30))
+        p.sync_disable_daemon.setChecked(bool(cfg.get("disable_local_daemon", True)))
+        state = cfg.get("last_state") if isinstance(cfg.get("last_state"), dict) else {}
+        if state.get("last_ok"):
+            p.sync_status.setText(f"同步状态：上次成功 {state.get('last_ok', '')}")
+
+    def _collect_sync_settings_ui(self) -> dict:
+        p = self.settings
+        old = {}
+        try:
+            from desktop.sync_client import load_sync_config
+
+            old = load_sync_config()
+        except Exception:
+            pass
+        pwd = p.sync_password.text().strip() or old.get("password", "admin123")
+        return {
+            "enabled": p.sync_enabled.isChecked(),
+            "api_base": p.sync_api_base.text().strip() or "http://127.0.0.1:9000",
+            "username": p.sync_username.text().strip() or "admin",
+            "password": pwd,
+            "interval_seconds": int(p.sync_interval.value()),
+            "disable_local_daemon": p.sync_disable_daemon.isChecked(),
+            "token": old.get("token", ""),
+        }
+
+    def _on_save_sync_settings(self):
+        from desktop.sync_client import load_sync_config, save_sync_config
+
+        cfg = self._collect_sync_settings_ui()
+        save_sync_config(cfg)
+        if cfg.get("enabled"):
+            self._sync_timer.start(max(10, cfg["interval_seconds"]) * 1000)
+        else:
+            self._sync_timer.stop()
+        self.settings.sync_status.setText("同步状态：设置已保存")
+        self.status.showMessage("云端同步设置已保存", 3000)
+        if cfg.get("enabled") and not load_sync_config().get("_daemon_warned"):
+            self.status.showMessage("请重启客户端以使「不启动本机守护进程」生效", 6000)
+
+    def _on_cloud_sync_tick(self):
+        self._run_cloud_sync(show_status=False)
+
+    def _run_cloud_sync(self, *, show_status: bool = True):
+        from desktop.sync_client import run_sync
+
+        result = run_sync()
+        if show_status or not result.get("ok"):
+            if result.get("ok"):
+                msg = f"同步成功 {result.get('last_ok', '')}"
+                self.settings.sync_status.setText(f"同步状态：{msg}")
+                self.status.showMessage(msg, 3000)
+            elif result.get("skipped"):
+                pass
+            else:
+                err = result.get("error", "未知错误")
+                self.settings.sync_status.setText(f"同步状态：失败 — {err}")
+                if show_status:
+                    self.status.showMessage(f"云端同步失败: {err}", 5000)
+
     def _start_daemon(self):
         """启动后台守护调度器（延迟启动，不阻塞 UI 初始化）。"""
+        try:
+            from desktop.sync_client import should_disable_local_daemon
+
+            if should_disable_local_daemon():
+                _log.info("local daemon skipped: cloud sync disable_local_daemon=true")
+                return
+        except Exception:
+            pass
+
         def _delayed_start():
             try:
                 import json
@@ -404,6 +513,8 @@ class MainWindow(QMainWindow):
         self.settings.btn_refresh_security_check.clicked.connect(self._load_auth_security_to_settings)
         self.settings.btn_cleanup_expired_tokens.clicked.connect(self._on_cleanup_expired_tokens)
         self.settings.btn_save_sched.clicked.connect(self._on_save_sched_config)
+        self.settings.btn_save_sync.clicked.connect(self._on_save_sync_settings)
+        self.settings.btn_sync_now.clicked.connect(lambda: self._run_cloud_sync(show_status=True))
         self.settings.btn_run_pipeline_now.clicked.connect(self._on_run_pipeline_now)
         self.settings.btn_test_openclaw_daemon.clicked.connect(self._on_test_openclaw_daemon)
         self.settings.btn_view_sched_log.clicked.connect(self._on_view_sched_log)

@@ -439,6 +439,56 @@ class SettingsPanel(QWidget):
         layout.addWidget(security_group)
 
         # ═══════════════════════════════════════════════════
+        # 6b. 云端双向同步（桌面 ↔ 服务器 API）
+        # ═══════════════════════════════════════════════════
+        sync_group = QGroupBox("☁️ 云端双向同步")
+        self.sync_group = sync_group
+        sync_group.setStyleSheet(f"QGroupBox{{font-size:{APP_FONT['section']}px;font-weight:bold;}}")
+        syncl = QVBoxLayout(sync_group)
+        sync_desc = QLabel(
+            "开启后，本机配置、手动仓、AI/竞技场资金状态与持仓会按更新时间自动与服务器合并。"
+            " 建议仅服务器跑定时任务，并勾选「不在本机启动守护进程」。"
+        )
+        sync_desc.setWordWrap(True)
+        sync_desc.setStyleSheet(f"color:#8b949e; font-size:{APP_FONT['caption']}px;")
+        syncl.addWidget(sync_desc)
+        self.sync_enabled = QCheckBox("启用自动双向同步")
+        syncl.addWidget(self.sync_enabled)
+        sg = QGridLayout()
+        sg.addWidget(QLabel("API 地址:"), 0, 0)
+        self.sync_api_base = QLineEdit()
+        self.sync_api_base.setPlaceholderText("http://10.70.0.150:9000")
+        sg.addWidget(self.sync_api_base, 0, 1, 1, 3)
+        sg.addWidget(QLabel("用户名:"), 1, 0)
+        self.sync_username = QLineEdit("admin")
+        sg.addWidget(self.sync_username, 1, 1)
+        sg.addWidget(QLabel("密码:"), 1, 2)
+        self.sync_password = QLineEdit()
+        self.sync_password.setEchoMode(QLineEdit.EchoMode.Password)
+        sg.addWidget(self.sync_password, 1, 3)
+        sg.addWidget(QLabel("间隔(秒):"), 2, 0)
+        self.sync_interval = QSpinBox()
+        self.sync_interval.setRange(10, 600)
+        self.sync_interval.setValue(30)
+        sg.addWidget(self.sync_interval, 2, 1)
+        self.sync_disable_daemon = QCheckBox("不在本机启动守护进程（推荐）")
+        self.sync_disable_daemon.setChecked(True)
+        sg.addWidget(self.sync_disable_daemon, 2, 2, 1, 2)
+        syncl.addLayout(sg)
+        row = QHBoxLayout()
+        self.btn_save_sync = QPushButton("💾 保存同步设置")
+        self.btn_sync_now = QPushButton("🔄 立即同步")
+        row.addWidget(self.btn_save_sync)
+        row.addWidget(self.btn_sync_now)
+        row.addStretch()
+        syncl.addLayout(row)
+        self.sync_status = QLabel("同步状态：未配置")
+        self.sync_status.setWordWrap(True)
+        self.sync_status.setStyleSheet(f"color:#94a3b8; font-size:{APP_FONT['caption']}px;")
+        syncl.addWidget(self.sync_status)
+        layout.addWidget(sync_group)
+
+        # ═══════════════════════════════════════════════════
         # 7. 数据 + 外观
         # ═══════════════════════════════════════════════════
         data_group = QGroupBox("📦 数据配置")
@@ -477,6 +527,7 @@ class SettingsPanel(QWidget):
             "trade_guard": self.trade_guard_group.styleSheet(),
             "openclaw_daemon": self.openclaw_daemon_group.styleSheet(),
             "security": self.security_group.styleSheet(),
+            "sync": self.sync_group.styleSheet(),
         }
         self._highlight_timer = QTimer(self)
         self._highlight_timer.setSingleShot(True)

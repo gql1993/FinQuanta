@@ -49,6 +49,7 @@ from api_server.schemas import (
     SyncExportRequest,
     SyncImportRequest,
     ArenaRunRequest,
+    SyncReconcileRequest,
     ManualPortfolioBuyRequest,
     ManualPortfolioSellRequest,
     PushTestRequest,
@@ -127,6 +128,7 @@ from core.application.sync_service import (
     export_runtime_state,
     export_runtime_state_to_file,
     import_runtime_state_from_file,
+    reconcile_runtime_state,
 )
 from core.application.task_service import (
     get_task_governance_state,
@@ -612,6 +614,22 @@ def api_short_term_fund_holdings(
 def api_short_term_sentiment(authorization: str | None = Header(default=None)):
     require_user(authorization)
     return ApiResponse(data=get_news_sentiment_snapshot())
+
+
+@app.post("/api/sync/reconcile", response_model=ApiResponse)
+def api_sync_reconcile(req: SyncReconcileRequest, authorization: str | None = Header(default=None)):
+    user = require_user(authorization)
+    if not has_permission(user, "settings:write"):
+        raise HTTPException(status_code=403, detail="permission denied")
+    result = reconcile_runtime_state(
+        device_id=req.device_id.strip(),
+        kv_changes=req.kv_changes,
+        positions=req.positions,
+    )
+    return ApiResponse(
+        data=result,
+        message=f"sync ok: server imported {result.get('imported_kv', 0)} kv keys",
+    )
 
 
 @app.get("/api/messages", response_model=ApiResponse)

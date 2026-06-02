@@ -49,6 +49,12 @@ class ArenaRunRequest(BaseModel):
     boards: list[str] = Field(default_factory=lambda: ["人工智能"])
 
 
+class SyncReconcileRequest(BaseModel):
+    device_id: str = ""
+    kv_changes: dict = Field(default_factory=dict)
+    positions: list[dict] = Field(default_factory=list)
+
+
 class CoordinatorPolicyRequest(BaseModel):
     observe_blocked_ratio: float | None = None
     sell_only_sentiment_ratio: float | None = None
